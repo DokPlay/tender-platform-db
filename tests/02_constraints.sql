@@ -1,0 +1,304 @@
+\set ON_ERROR_STOP on
+
+BEGIN;
+SET LOCAL search_path TO tender_platform, public;
+
+INSERT INTO companies (id, name, tax_id)
+OVERRIDING SYSTEM VALUE
+VALUES
+    (9001, 'Тестовый заказчик', 'TEST-CUSTOMER-9001'),
+    (9002, 'Тестовый участник', 'TEST-BIDDER-9002'),
+    (9003, 'Второй участник', 'TEST-BIDDER-9003');
+
+INSERT INTO tenders (
+    id,
+    source_system,
+    external_id,
+    procurement_number,
+    title,
+    customer_company_id,
+    status,
+    published_at,
+    submission_deadline_at,
+    completed_at
+)
+OVERRIDING SYSTEM VALUE
+VALUES (
+    9001,
+    'test',
+    'tender-9001',
+    'TEST-9001',
+    'Проверка ограничений',
+    9001,
+    'completed',
+    timestamptz '2026-01-01 09:00:00+03',
+    timestamptz '2026-01-05 18:00:00+03',
+    timestamptz '2026-01-10 12:00:00+03'
+);
+
+INSERT INTO lots (
+    id,
+    tender_id,
+    lot_number,
+    title,
+    initial_price,
+    currency_code,
+    status
+)
+OVERRIDING SYSTEM VALUE
+VALUES
+    (
+        9001,
+        9001,
+        1,
+        'Тестовый лот',
+        1000.00,
+        'RUB',
+        'awarded'
+    ),
+    (
+        9002,
+        9001,
+        2,
+        'Лот без результата',
+        500.00,
+        'RUB',
+        'open'
+    );
+
+INSERT INTO bids (
+    id,
+    lot_id,
+    bidder_company_id,
+    version_no,
+    amount,
+    submitted_at,
+    status
+)
+OVERRIDING SYSTEM VALUE
+VALUES (
+    9001,
+    9001,
+    9002,
+    1,
+    900.00,
+    timestamptz '2026-01-04 12:00:00+03',
+    'admitted'
+);
+
+INSERT INTO executors (
+    id,
+    lot_id,
+    company_id,
+    awarded_amount,
+    awarded_at,
+    status
+)
+OVERRIDING SYSTEM VALUE
+VALUES (
+    9001,
+    9001,
+    9002,
+    900.00,
+    timestamptz '2026-01-10 12:00:00+03',
+    'completed'
+);
+
+DO $test$
+BEGIN
+    BEGIN
+        INSERT INTO companies (name, tax_id)
+        VALUES ('Дубликат ИНН', 'TEST-CUSTOMER-9001');
+        RAISE EXCEPTION 'uq_companies_tax_id did not reject a duplicate tax_id';
+    EXCEPTION
+        WHEN unique_violation THEN NULL;
+    END;
+
+    BEGIN
+        INSERT INTO tenders (
+            source_system,
+            external_id,
+            procurement_number,
+            title,
+            customer_company_id,
+            status,
+            published_at,
+            submission_deadline_at
+        )
+        VALUES (
+            'test',
+            'invalid-status',
+            'INVALID-STATUS',
+            'Недопустимый статус',
+            9001,
+            'unknown',
+            timestamptz '2026-01-01 09:00:00+03',
+            timestamptz '2026-01-05 18:00:00+03'
+        );
+        RAISE EXCEPTION 'ck_tenders_status did not reject an invalid status';
+    EXCEPTION
+        WHEN check_violation THEN NULL;
+    END;
+
+    BEGIN
+        INSERT INTO tenders (
+            source_system,
+            external_id,
+            procurement_number,
+            title,
+            customer_company_id,
+            status,
+            published_at,
+            submission_deadline_at
+        )
+        VALUES (
+            'test',
+            'invalid-dates',
+            'INVALID-DATES',
+            'Недопустимые даты',
+            9001,
+            'published',
+            timestamptz '2026-01-05 18:00:00+03',
+            timestamptz '2026-01-01 09:00:00+03'
+        );
+        RAISE EXCEPTION 'ck_tenders_submission_window did not reject an invalid deadline';
+    EXCEPTION
+        WHEN check_violation THEN NULL;
+    END;
+
+    BEGIN
+        INSERT INTO lots (
+            tender_id,
+            lot_number,
+            title,
+            initial_price,
+            currency_code,
+            status
+        )
+        VALUES (999999, 1, 'Лот без тендера', 100.00, 'RUB', 'open');
+        RAISE EXCEPTION 'fk_lots_tender did not reject an orphan lot';
+    EXCEPTION
+        WHEN foreign_key_violation THEN NULL;
+    END;
+
+    BEGIN
+        INSERT INTO lots (
+            tender_id,
+            lot_number,
+            title,
+            initial_price,
+            currency_code,
+            status
+        )
+        VALUES (9001, 2, 'Отрицательная цена', -1.00, 'RUB', 'open');
+        RAISE EXCEPTION 'ck_lots_initial_price did not reject a negative amount';
+    EXCEPTION
+        WHEN check_violation THEN NULL;
+    END;
+
+    BEGIN
+        INSERT INTO lots (
+            tender_id,
+            lot_number,
+            title,
+            initial_price,
+            currency_code,
+            status
+        )
+        VALUES (9001, 1, 'Дубликат номера лота', 100.00, 'RUB', 'open');
+        RAISE EXCEPTION 'uq_lots_tender_number did not reject a duplicate lot number';
+    EXCEPTION
+        WHEN unique_violation THEN NULL;
+    END;
+
+    BEGIN
+        INSERT INTO bids (
+            lot_id,
+            bidder_company_id,
+            version_no,
+            amount,
+            submitted_at,
+            status
+        )
+        VALUES (
+            9002,
+            9003,
+            1,
+            -1.00,
+            timestamptz '2026-01-04 13:00:00+03',
+            'submitted'
+        );
+        RAISE EXCEPTION 'ck_bids_amount did not reject a negative amount';
+    EXCEPTION
+        WHEN check_violation THEN NULL;
+    END;
+
+    BEGIN
+        INSERT INTO bids (
+            lot_id,
+            bidder_company_id,
+            version_no,
+            amount,
+            submitted_at,
+            status
+        )
+        VALUES (
+            9001,
+            9002,
+            1,
+            850.00,
+            timestamptz '2026-01-04 14:00:00+03',
+            'admitted'
+        );
+        RAISE EXCEPTION 'uq_bids_lot_bidder_version did not reject a duplicate version';
+    EXCEPTION
+        WHEN unique_violation THEN NULL;
+    END;
+
+    BEGIN
+        INSERT INTO executors (
+            lot_id,
+            company_id,
+            awarded_amount,
+            awarded_at,
+            status
+        )
+        VALUES (
+            9001,
+            9003,
+            850.00,
+            timestamptz '2026-01-10 13:00:00+03',
+            'awarded'
+        );
+        RAISE EXCEPTION 'uq_executors_lot did not reject a second executor for one lot';
+    EXCEPTION
+        WHEN unique_violation THEN NULL;
+    END;
+
+    BEGIN
+        INSERT INTO executors (
+            lot_id,
+            company_id,
+            awarded_amount,
+            awarded_at,
+            status
+        )
+        VALUES (
+            9002,
+            9003,
+            -1.00,
+            timestamptz '2026-01-10 13:00:00+03',
+            'awarded'
+        );
+        RAISE EXCEPTION 'ck_executors_awarded_amount did not reject a negative amount';
+    EXCEPTION
+        WHEN check_violation THEN NULL;
+        WHEN unique_violation THEN
+            RAISE EXCEPTION 'Negative award test reached uniqueness before amount validation';
+    END;
+END
+$test$;
+
+ROLLBACK;
+
+SELECT 'constraint_contract_passed' AS result;
