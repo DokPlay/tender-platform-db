@@ -64,6 +64,15 @@ VALUES
         500.00,
         'RUB',
         'open'
+    ),
+    (
+        9003,
+        9001,
+        3,
+        'Лот с нулевой начальной ценой',
+        0.00,
+        'RUB',
+        'awarded'
     );
 
 INSERT INTO bids (
@@ -76,15 +85,25 @@ INSERT INTO bids (
     status
 )
 OVERRIDING SYSTEM VALUE
-VALUES (
-    9001,
-    9001,
-    9002,
-    1,
-    900.00,
-    timestamptz '2026-01-04 12:00:00+03',
-    'admitted'
-);
+VALUES
+    (
+        9001,
+        9001,
+        9002,
+        1,
+        900.00,
+        timestamptz '2026-01-04 12:00:00+03',
+        'admitted'
+    ),
+    (
+        9002,
+        9003,
+        9003,
+        1,
+        0.00,
+        timestamptz '2026-01-04 12:30:00+03',
+        'admitted'
+    );
 
 INSERT INTO executors (
     id,
@@ -95,16 +114,27 @@ INSERT INTO executors (
     status
 )
 OVERRIDING SYSTEM VALUE
-VALUES (
-    9001,
-    9001,
-    9002,
-    900.00,
-    timestamptz '2026-01-10 12:00:00+03',
-    'completed'
-);
+VALUES
+    (
+        9001,
+        9001,
+        9002,
+        900.00,
+        timestamptz '2026-01-10 12:00:00+03',
+        'completed'
+    ),
+    (
+        9002,
+        9003,
+        9003,
+        0.00,
+        timestamptz '2026-01-10 12:30:00+03',
+        'completed'
+    );
 
 DO $test$
+DECLARE
+    violated_constraint text;
 BEGIN
     BEGIN
         INSERT INTO companies (name, tax_id)
@@ -246,10 +276,31 @@ BEGIN
             currency_code,
             status
         )
-        VALUES (9001, 2, 'Отрицательная цена', -1.00, 'RUB', 'open');
+        VALUES (9001, 4, 'Отрицательная цена', -1.00, 'RUB', 'open');
         RAISE EXCEPTION 'ck_lots_initial_price did not reject a negative amount';
     EXCEPTION
         WHEN check_violation THEN NULL;
+    END;
+
+    BEGIN
+        INSERT INTO lots (
+            tender_id,
+            lot_number,
+            title,
+            initial_price,
+            currency_code,
+            status
+        )
+        VALUES (9001, 5, 'Цена NaN', 'NaN'::numeric, 'RUB', 'open');
+        RAISE EXCEPTION 'ck_lots_initial_price did not reject NaN';
+    EXCEPTION
+        WHEN check_violation THEN
+            GET STACKED DIAGNOSTICS violated_constraint = CONSTRAINT_NAME;
+            IF violated_constraint IS DISTINCT FROM 'ck_lots_initial_price' THEN
+                RAISE EXCEPTION
+                    'NaN lot price violated unexpected constraint %',
+                    violated_constraint;
+            END IF;
     END;
 
     BEGIN
@@ -287,6 +338,34 @@ BEGIN
         RAISE EXCEPTION 'ck_bids_amount did not reject a negative amount';
     EXCEPTION
         WHEN check_violation THEN NULL;
+    END;
+
+    BEGIN
+        INSERT INTO bids (
+            lot_id,
+            bidder_company_id,
+            version_no,
+            amount,
+            submitted_at,
+            status
+        )
+        VALUES (
+            9002,
+            9003,
+            1,
+            'NaN'::numeric,
+            timestamptz '2026-01-04 13:30:00+03',
+            'submitted'
+        );
+        RAISE EXCEPTION 'ck_bids_amount did not reject NaN';
+    EXCEPTION
+        WHEN check_violation THEN
+            GET STACKED DIAGNOSTICS violated_constraint = CONSTRAINT_NAME;
+            IF violated_constraint IS DISTINCT FROM 'ck_bids_amount' THEN
+                RAISE EXCEPTION
+                    'NaN bid amount violated unexpected constraint %',
+                    violated_constraint;
+            END IF;
     END;
 
     BEGIN
@@ -351,6 +430,32 @@ BEGIN
         WHEN check_violation THEN NULL;
         WHEN unique_violation THEN
             RAISE EXCEPTION 'Negative award test reached uniqueness before amount validation';
+    END;
+
+    BEGIN
+        INSERT INTO executors (
+            lot_id,
+            company_id,
+            awarded_amount,
+            awarded_at,
+            status
+        )
+        VALUES (
+            9002,
+            9003,
+            'NaN'::numeric,
+            timestamptz '2026-01-10 14:00:00+03',
+            'awarded'
+        );
+        RAISE EXCEPTION 'ck_executors_awarded_amount did not reject NaN';
+    EXCEPTION
+        WHEN check_violation THEN
+            GET STACKED DIAGNOSTICS violated_constraint = CONSTRAINT_NAME;
+            IF violated_constraint IS DISTINCT FROM 'ck_executors_awarded_amount' THEN
+                RAISE EXCEPTION
+                    'NaN awarded amount violated unexpected constraint %',
+                    violated_constraint;
+            END IF;
     END;
 END
 $test$;

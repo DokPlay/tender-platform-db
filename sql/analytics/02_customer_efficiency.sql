@@ -3,8 +3,9 @@
 /*
 Query 2. Customer procurement efficiency for the last six fully closed
 calendar months. Eligible report lots are materialized before admitted bids are
-read. Monetary values are aggregated at lot grain, and ranking uses the exact
-savings ratio before that ratio is rounded for display.
+read. A bidder is admitted only when its latest version is admitted. Monetary
+values are aggregated at lot grain, and ranking uses the exact savings ratio
+before that ratio is rounded for display.
 */
 CREATE OR REPLACE VIEW tender_platform.v_customer_efficiency_last_six_months AS
 WITH report_bounds AS (
@@ -46,11 +47,18 @@ eligible_lots AS MATERIALIZED (
 admitted_bidders_by_lot AS (
     SELECT
         eligible.lot_id,
-        count(DISTINCT bid.bidder_company_id) AS admitted_bidder_count
+        count(*) AS admitted_bidder_count
     FROM eligible_lots eligible
     JOIN tender_platform.bids bid
       ON bid.lot_id = eligible.lot_id
      AND bid.status = 'admitted'
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM tender_platform.bids newer_bid
+        WHERE newer_bid.lot_id = bid.lot_id
+          AND newer_bid.bidder_company_id = bid.bidder_company_id
+          AND newer_bid.version_no > bid.version_no
+    )
     GROUP BY eligible.lot_id
 ),
 lot_metrics AS (
@@ -91,10 +99,13 @@ customer_totals AS (
 ),
 ranked_customers AS (
     SELECT
-        row_number() OVER (
-            PARTITION BY report_month, currency_code
-            ORDER BY savings_percent_exact DESC NULLS LAST, customer_company_id
-        ) AS customer_rank,
+        CASE
+            WHEN savings_percent_exact IS NULL THEN NULL
+            ELSE row_number() OVER (
+                PARTITION BY report_month, currency_code
+                ORDER BY savings_percent_exact DESC NULLS LAST, customer_company_id
+            )
+        END AS customer_rank,
         report_month,
         customer_company_id,
         customer_name,

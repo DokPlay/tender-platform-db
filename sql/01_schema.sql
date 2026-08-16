@@ -101,7 +101,8 @@ CREATE TABLE lots (
     CONSTRAINT uq_lots_tender_number UNIQUE (tender_id, lot_number),
     CONSTRAINT ck_lots_number CHECK (lot_number > 0),
     CONSTRAINT ck_lots_title_not_blank CHECK (btrim(title) <> ''),
-    CONSTRAINT ck_lots_initial_price CHECK (initial_price >= 0),
+    CONSTRAINT ck_lots_initial_price
+        CHECK (initial_price <> 'NaN'::numeric AND initial_price >= 0),
     CONSTRAINT ck_lots_currency_code
         CHECK (currency_code ~ '^[A-Z]{3}$'),
     CONSTRAINT ck_lots_status
@@ -138,7 +139,8 @@ CREATE TABLE bids (
     CONSTRAINT ck_bids_version CHECK (version_no > 0),
     CONSTRAINT ck_bids_source_id_not_blank
         CHECK (source_bid_id IS NULL OR btrim(source_bid_id) <> ''),
-    CONSTRAINT ck_bids_amount CHECK (amount >= 0),
+    CONSTRAINT ck_bids_amount
+        CHECK (amount <> 'NaN'::numeric AND amount >= 0),
     CONSTRAINT ck_bids_status
         CHECK (status IN ('submitted', 'admitted', 'rejected', 'withdrawn', 'superseded'))
 );
@@ -168,7 +170,8 @@ CREATE TABLE executors (
         ON UPDATE RESTRICT
         ON DELETE RESTRICT,
     CONSTRAINT uq_executors_lot UNIQUE (lot_id),
-    CONSTRAINT ck_executors_awarded_amount CHECK (awarded_amount >= 0),
+    CONSTRAINT ck_executors_awarded_amount
+        CHECK (awarded_amount <> 'NaN'::numeric AND awarded_amount >= 0),
     CONSTRAINT ck_executors_status
         CHECK (status IN (
             'awarded',

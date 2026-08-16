@@ -79,8 +79,11 @@ try {
     Invoke-PsqlFile '/work/tests/05_cancelled_award_contract.sql'
     Invoke-PsqlFile '/work/tests/06_exact_ranking_contract.sql'
     Invoke-PsqlFile '/work/tests/07_boundary_currency_contract.sql'
+    Invoke-PsqlFile '/work/tests/08_latest_bid_version_contract.sql'
+    Invoke-PsqlFile '/work/tests/09_six_month_boundary_contract.sql'
+    Invoke-PsqlFile '/work/tests/10_zero_price_contract.sql'
 
-    Write-Output 'PASS: 7 database contracts and 2 canonical analytical queries completed successfully.'
+    Write-Output 'PASS: 10 database contracts and 2 canonical analytical queries completed successfully.'
 }
 finally {
     if ($containerCreated) {

@@ -101,27 +101,34 @@ DECLARE
     higher_rank bigint;
     lower_displayed_percent numeric;
     higher_displayed_percent numeric;
+    expected_report_month date := (
+        date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Moscow')
+        - INTERVAL '1 month'
+    )::date;
 BEGIN
     SELECT customer_rank, savings_percent
-      INTO lower_rank, lower_displayed_percent
+      INTO STRICT lower_rank, lower_displayed_percent
       FROM v_customer_efficiency_last_six_months
      WHERE customer_company_id = 1
-       AND currency_code = 'JPY';
+       AND currency_code = 'JPY'
+       AND report_month = expected_report_month;
 
     SELECT customer_rank, savings_percent
-      INTO higher_rank, higher_displayed_percent
+      INTO STRICT higher_rank, higher_displayed_percent
       FROM v_customer_efficiency_last_six_months
      WHERE customer_company_id = 2
-       AND currency_code = 'JPY';
+       AND currency_code = 'JPY'
+       AND report_month = expected_report_month;
 
-    IF higher_rank <> 1 OR lower_rank <> 2 THEN
+    IF higher_rank IS DISTINCT FROM 1 OR lower_rank IS DISTINCT FROM 2 THEN
         RAISE EXCEPTION
             'Expected exact 10.004%% to rank above 10.003%%, found ranks % and %',
             higher_rank,
             lower_rank;
     END IF;
 
-    IF lower_displayed_percent <> 10.00 OR higher_displayed_percent <> 10.00 THEN
+    IF lower_displayed_percent IS DISTINCT FROM 10.00
+       OR higher_displayed_percent IS DISTINCT FROM 10.00 THEN
         RAISE EXCEPTION
             'Expected both displayed percentages to remain rounded to 10.00, found % and %',
             lower_displayed_percent,

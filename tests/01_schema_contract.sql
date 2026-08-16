@@ -4,7 +4,7 @@ DO $test$
 DECLARE
     missing_tables text[];
     missing_constraints text[];
-    missing_indexes text[];
+    invalid_indexes text[];
     invalid_foreign_keys text[];
     unindexed_foreign_keys text[];
     primary_key_count integer;
@@ -94,25 +94,136 @@ BEGIN
         RAISE EXCEPTION 'Missing business constraints: %', array_to_string(missing_constraints, ', ');
     END IF;
 
-    SELECT array_agg(required.index_name ORDER BY required.index_name)
-      INTO missing_indexes
-      FROM (
-          VALUES
-              ('idx_tenders_customer_company'),
-              ('idx_tenders_status_submission_deadline'),
-              ('idx_bids_lot_status_bidder'),
-              ('idx_bids_admitted_lot_bidder'),
-              ('idx_bids_bidder_company'),
-              ('idx_executors_company'),
-              ('idx_executors_active_awarded_at_company')
-      ) AS required(index_name)
-      LEFT JOIN pg_indexes actual
-        ON actual.schemaname = 'tender_platform'
-       AND actual.indexname = required.index_name
-     WHERE actual.indexname IS NULL;
+    WITH required_indexes AS (
+        SELECT *
+          FROM (
+              VALUES
+                  (
+                      'idx_tenders_customer_company',
+                      'tenders',
+                      ARRAY['customer_company_id']::text[],
+                      ARRAY[]::text[],
+                      ARRAY[false]::boolean[],
+                      NULL::text
+                  ),
+                  (
+                      'idx_tenders_status_submission_deadline',
+                      'tenders',
+                      ARRAY['status', 'submission_deadline_at'],
+                      ARRAY[]::text[],
+                      ARRAY[false, false],
+                      NULL
+                  ),
+                  (
+                      'idx_bids_lot_status_bidder',
+                      'bids',
+                      ARRAY['lot_id', 'status', 'bidder_company_id'],
+                      ARRAY[]::text[],
+                      ARRAY[false, false, false],
+                      NULL
+                  ),
+                  (
+                      'idx_bids_admitted_lot_bidder',
+                      'bids',
+                      ARRAY['lot_id', 'bidder_company_id'],
+                      ARRAY[]::text[],
+                      ARRAY[false, false],
+                      'status = ''admitted''::text'
+                  ),
+                  (
+                      'idx_bids_bidder_company',
+                      'bids',
+                      ARRAY['bidder_company_id', 'submitted_at'],
+                      ARRAY[]::text[],
+                      ARRAY[false, true],
+                      NULL
+                  ),
+                  (
+                      'idx_executors_company',
+                      'executors',
+                      ARRAY['company_id'],
+                      ARRAY[]::text[],
+                      ARRAY[false],
+                      NULL
+                  ),
+                  (
+                      'idx_executors_active_awarded_at_company',
+                      'executors',
+                      ARRAY['awarded_at', 'company_id'],
+                      ARRAY['awarded_amount', 'lot_id'],
+                      ARRAY[false, false],
+                      'status = ANY (ARRAY[''awarded''::text, ''contract_signed''::text, ''performing''::text, ''completed''::text])'
+                  )
+          ) AS expected(
+              index_name,
+              table_name,
+              key_expressions,
+              included_expressions,
+              descending_keys,
+              predicate
+          )
+    ),
+    actual_indexes AS (
+        SELECT
+            index_table.relname AS table_name,
+            index_class.relname AS index_name,
+            access_method.amname AS access_method,
+            ARRAY(
+                SELECT pg_get_indexdef(index_info.indexrelid, position, true)
+                  FROM generate_series(1, index_info.indnkeyatts) position
+                 ORDER BY position
+            ) AS key_expressions,
+            ARRAY(
+                SELECT pg_get_indexdef(index_info.indexrelid, position, true)
+                  FROM generate_series(
+                      index_info.indnkeyatts + 1,
+                      index_info.indnatts
+                  ) position
+                 ORDER BY position
+            ) AS included_expressions,
+            ARRAY(
+                SELECT (index_info.indoption[position - 1] & 1) = 1
+                  FROM generate_series(1, index_info.indnkeyatts) position
+                 ORDER BY position
+            ) AS descending_keys,
+            pg_get_expr(index_info.indpred, index_info.indrelid, true) AS predicate,
+            index_info.indisunique,
+            index_info.indisvalid,
+            index_info.indisready
+        FROM pg_index index_info
+        JOIN pg_class index_class
+          ON index_class.oid = index_info.indexrelid
+        JOIN pg_namespace index_schema
+          ON index_schema.oid = index_class.relnamespace
+        JOIN pg_class index_table
+          ON index_table.oid = index_info.indrelid
+        JOIN pg_namespace table_schema
+          ON table_schema.oid = index_table.relnamespace
+        JOIN pg_am access_method
+          ON access_method.oid = index_class.relam
+        WHERE index_schema.nspname = 'tender_platform'
+          AND table_schema.nspname = 'tender_platform'
+    )
+    SELECT array_agg(expected.index_name ORDER BY expected.index_name)
+      INTO invalid_indexes
+      FROM required_indexes expected
+      LEFT JOIN actual_indexes actual
+        ON actual.index_name = expected.index_name
+       AND actual.table_name = expected.table_name
+       AND actual.access_method = 'btree'
+       AND actual.key_expressions = expected.key_expressions
+       AND actual.included_expressions = expected.included_expressions
+       AND actual.descending_keys = expected.descending_keys
+       AND actual.predicate IS NOT DISTINCT FROM expected.predicate
+       AND NOT actual.indisunique
+       AND actual.indisvalid
+       AND actual.indisready
+     WHERE actual.index_name IS NULL;
 
-    IF missing_indexes IS NOT NULL THEN
-        RAISE EXCEPTION 'Missing workload indexes: %', array_to_string(missing_indexes, ', ');
+    IF invalid_indexes IS NOT NULL THEN
+        RAISE EXCEPTION
+            'Missing or incorrectly defined workload indexes: %',
+            array_to_string(invalid_indexes, ', ');
     END IF;
 
     WITH required_foreign_keys AS (
@@ -192,6 +303,7 @@ BEGIN
             WHERE index_info.indrelid = constraint_info.conrelid
               AND index_info.indisvalid
               AND index_info.indisready
+              AND index_info.indpred IS NULL
               AND index_info.indkey[0] = constraint_info.conkey[1]
        );
 
