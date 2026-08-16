@@ -1,12 +1,43 @@
 \set ON_ERROR_STOP on
 
 -- Included by tender_platform.sql inside one transaction.
+DO $install_guard$
+BEGIN
+    IF current_setting('tender_platform.install_context', true)
+       IS DISTINCT FROM 'complete' THEN
+        RAISE EXCEPTION USING
+            ERRCODE = '55000',
+            MESSAGE = 'sql/01_schema.sql is an internal component; run sql/tender_platform.sql';
+    END IF;
+END
+$install_guard$;
 
 CREATE SCHEMA tender_platform;
 COMMENT ON SCHEMA tender_platform IS
     'Normalized data model for monitoring government procurement tenders.';
 
 SET LOCAL search_path TO tender_platform, public;
+
+CREATE FUNCTION has_non_whitespace(input_value text)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE
+STRICT
+PARALLEL SAFE
+RETURN input_value ~ U&'[^[:space:]\00A0]';
+
+CREATE FUNCTION has_canonical_edges(input_value text)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE
+STRICT
+PARALLEL SAFE
+RETURN input_value !~ U&'(^[[:space:]\00A0])|([[:space:]\00A0]$)';
+
+COMMENT ON FUNCTION has_non_whitespace(text) IS
+    'True when text contains at least one character other than Unicode-aware whitespace.';
+COMMENT ON FUNCTION has_canonical_edges(text) IS
+    'True when text has no leading or trailing whitespace, including non-breaking space.';
 
 CREATE TABLE companies (
     id bigint GENERATED ALWAYS AS IDENTITY,
@@ -16,8 +47,11 @@ CREATE TABLE companies (
 
     CONSTRAINT pk_companies PRIMARY KEY (id),
     CONSTRAINT uq_companies_tax_id UNIQUE (tax_id),
-    CONSTRAINT ck_companies_name_not_blank CHECK (btrim(name) <> ''),
-    CONSTRAINT ck_companies_tax_id_not_blank CHECK (btrim(tax_id) <> '')
+    CONSTRAINT ck_companies_name_not_blank CHECK (has_non_whitespace(name)),
+    CONSTRAINT ck_companies_name_canonical_edges CHECK (has_canonical_edges(name)),
+    CONSTRAINT ck_companies_tax_id_not_blank CHECK (has_non_whitespace(tax_id)),
+    CONSTRAINT ck_companies_tax_id_canonical_edges CHECK (has_canonical_edges(tax_id)),
+    CONSTRAINT ck_companies_finite_times CHECK (isfinite(created_at))
 );
 
 COMMENT ON TABLE companies IS
@@ -48,13 +82,21 @@ CREATE TABLE tenders (
     CONSTRAINT uq_tenders_source_external
         UNIQUE (source_system, external_id),
     CONSTRAINT ck_tenders_source_not_blank
-        CHECK (btrim(source_system) <> ''),
+        CHECK (has_non_whitespace(source_system)),
+    CONSTRAINT ck_tenders_source_canonical_edges
+        CHECK (has_canonical_edges(source_system)),
     CONSTRAINT ck_tenders_external_id_not_blank
-        CHECK (btrim(external_id) <> ''),
+        CHECK (has_non_whitespace(external_id)),
+    CONSTRAINT ck_tenders_external_id_canonical_edges
+        CHECK (has_canonical_edges(external_id)),
     CONSTRAINT ck_tenders_procurement_number_not_blank
-        CHECK (btrim(procurement_number) <> ''),
+        CHECK (has_non_whitespace(procurement_number)),
+    CONSTRAINT ck_tenders_procurement_number_canonical_edges
+        CHECK (has_canonical_edges(procurement_number)),
     CONSTRAINT ck_tenders_title_not_blank
-        CHECK (btrim(title) <> ''),
+        CHECK (has_non_whitespace(title)),
+    CONSTRAINT ck_tenders_title_canonical_edges
+        CHECK (has_canonical_edges(title)),
     CONSTRAINT ck_tenders_status
         CHECK (status IN (
             'planned',
@@ -75,6 +117,14 @@ CREATE TABLE tenders (
                 completed_at IS NOT NULL
                 AND completed_at >= submission_deadline_at
             )
+        ),
+    CONSTRAINT ck_tenders_finite_times
+        CHECK (
+            isfinite(published_at)
+            AND isfinite(submission_deadline_at)
+            AND (completed_at IS NULL OR isfinite(completed_at))
+            AND (source_updated_at IS NULL OR isfinite(source_updated_at))
+            AND isfinite(created_at)
         )
 );
 
@@ -100,13 +150,15 @@ CREATE TABLE lots (
         ON DELETE RESTRICT,
     CONSTRAINT uq_lots_tender_number UNIQUE (tender_id, lot_number),
     CONSTRAINT ck_lots_number CHECK (lot_number > 0),
-    CONSTRAINT ck_lots_title_not_blank CHECK (btrim(title) <> ''),
+    CONSTRAINT ck_lots_title_not_blank CHECK (has_non_whitespace(title)),
+    CONSTRAINT ck_lots_title_canonical_edges CHECK (has_canonical_edges(title)),
     CONSTRAINT ck_lots_initial_price
         CHECK (initial_price <> 'NaN'::numeric AND initial_price >= 0),
     CONSTRAINT ck_lots_currency_code
         CHECK (currency_code ~ '^[A-Z]{3}$'),
     CONSTRAINT ck_lots_status
-        CHECK (status IN ('open', 'evaluation', 'awarded', 'completed', 'cancelled'))
+        CHECK (status IN ('open', 'evaluation', 'awarded', 'completed', 'cancelled')),
+    CONSTRAINT ck_lots_finite_times CHECK (isfinite(created_at))
 );
 
 COMMENT ON TABLE lots IS
@@ -138,11 +190,15 @@ CREATE TABLE bids (
         UNIQUE (lot_id, bidder_company_id, version_no),
     CONSTRAINT ck_bids_version CHECK (version_no > 0),
     CONSTRAINT ck_bids_source_id_not_blank
-        CHECK (source_bid_id IS NULL OR btrim(source_bid_id) <> ''),
+        CHECK (source_bid_id IS NULL OR has_non_whitespace(source_bid_id)),
+    CONSTRAINT ck_bids_source_id_canonical_edges
+        CHECK (source_bid_id IS NULL OR has_canonical_edges(source_bid_id)),
     CONSTRAINT ck_bids_amount
         CHECK (amount <> 'NaN'::numeric AND amount >= 0),
     CONSTRAINT ck_bids_status
-        CHECK (status IN ('submitted', 'admitted', 'rejected', 'withdrawn', 'superseded'))
+        CHECK (status IN ('submitted', 'admitted', 'rejected', 'withdrawn', 'superseded')),
+    CONSTRAINT ck_bids_finite_times
+        CHECK (isfinite(submitted_at) AND isfinite(created_at))
 );
 
 COMMENT ON TABLE bids IS
@@ -181,11 +237,201 @@ CREATE TABLE executors (
             'terminated'
         )),
     CONSTRAINT ck_executors_contract_number_not_blank
-        CHECK (contract_number IS NULL OR btrim(contract_number) <> '')
+        CHECK (contract_number IS NULL OR has_non_whitespace(contract_number)),
+    CONSTRAINT ck_executors_contract_number_canonical_edges
+        CHECK (contract_number IS NULL OR has_canonical_edges(contract_number)),
+    CONSTRAINT ck_executors_finite_times
+        CHECK (isfinite(awarded_at) AND isfinite(created_at))
 );
 
 COMMENT ON TABLE executors IS
     'Award facts: one awarded company and amount per lot in version 1.';
+
+CREATE FUNCTION enforce_bid_submission_window()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, tender_platform
+AS $function$
+DECLARE
+    tender_published_at timestamptz;
+    tender_deadline_at timestamptz;
+BEGIN
+    SELECT tender.published_at, tender.submission_deadline_at
+      INTO tender_published_at, tender_deadline_at
+      FROM tender_platform.lots lot
+      JOIN tender_platform.tenders tender
+        ON tender.id = lot.tender_id
+     WHERE lot.id = NEW.lot_id
+       FOR SHARE OF lot, tender;
+
+    IF NOT FOUND THEN
+        RETURN NEW;
+    END IF;
+
+    IF NEW.submitted_at < tender_published_at
+       OR NEW.submitted_at > tender_deadline_at THEN
+        RAISE EXCEPTION USING
+            ERRCODE = '23514',
+            CONSTRAINT = 'ct_bids_submission_window',
+            MESSAGE = format(
+                'bid %s timestamp must be within tender publication and submission deadline',
+                NEW.id
+            );
+    END IF;
+
+    RETURN NEW;
+END
+$function$;
+
+CREATE FUNCTION enforce_executor_award_window()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, tender_platform
+AS $function$
+DECLARE
+    tender_deadline_at timestamptz;
+BEGIN
+    SELECT tender.submission_deadline_at
+      INTO tender_deadline_at
+      FROM tender_platform.lots lot
+      JOIN tender_platform.tenders tender
+        ON tender.id = lot.tender_id
+     WHERE lot.id = NEW.lot_id
+       FOR SHARE OF lot, tender;
+
+    IF NOT FOUND THEN
+        RETURN NEW;
+    END IF;
+
+    IF NEW.awarded_at < tender_deadline_at THEN
+        RAISE EXCEPTION USING
+            ERRCODE = '23514',
+            CONSTRAINT = 'ct_executors_award_window',
+            MESSAGE = format(
+                'executor award %s cannot precede the tender submission deadline',
+                NEW.id
+            );
+    END IF;
+
+    RETURN NEW;
+END
+$function$;
+
+CREATE FUNCTION revalidate_tender_related_timing()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, tender_platform
+AS $function$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+          FROM tender_platform.lots lot
+          JOIN tender_platform.bids bid
+            ON bid.lot_id = lot.id
+         WHERE lot.tender_id = NEW.id
+           AND (
+               bid.submitted_at < NEW.published_at
+               OR bid.submitted_at > NEW.submission_deadline_at
+           )
+    ) OR EXISTS (
+        SELECT 1
+          FROM tender_platform.lots lot
+          JOIN tender_platform.executors executor
+            ON executor.lot_id = lot.id
+         WHERE lot.tender_id = NEW.id
+           AND executor.awarded_at < NEW.submission_deadline_at
+    ) THEN
+        RAISE EXCEPTION USING
+            ERRCODE = '23514',
+            CONSTRAINT = 'ct_tenders_related_timing',
+            MESSAGE = format(
+                'tender %s date change invalidates related bid or award timestamps',
+                NEW.id
+            );
+    END IF;
+
+    RETURN NEW;
+END
+$function$;
+
+CREATE FUNCTION revalidate_lot_related_timing()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, tender_platform
+AS $function$
+DECLARE
+    tender_published_at timestamptz;
+    tender_deadline_at timestamptz;
+BEGIN
+    SELECT tender.published_at, tender.submission_deadline_at
+      INTO tender_published_at, tender_deadline_at
+      FROM tender_platform.tenders tender
+     WHERE tender.id = NEW.tender_id
+       FOR SHARE;
+
+    IF NOT FOUND THEN
+        RETURN NEW;
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+          FROM tender_platform.bids bid
+         WHERE bid.lot_id = NEW.id
+           AND (
+               bid.submitted_at < tender_published_at
+               OR bid.submitted_at > tender_deadline_at
+           )
+    ) OR EXISTS (
+        SELECT 1
+          FROM tender_platform.executors executor
+         WHERE executor.lot_id = NEW.id
+           AND executor.awarded_at < tender_deadline_at
+    ) THEN
+        RAISE EXCEPTION USING
+            ERRCODE = '23514',
+            CONSTRAINT = 'ct_lots_related_timing',
+            MESSAGE = format(
+                'lot %s tender reassignment invalidates related bid or award timestamps',
+                NEW.id
+            );
+    END IF;
+
+    RETURN NEW;
+END
+$function$;
+
+CREATE CONSTRAINT TRIGGER ct_bids_submission_window
+AFTER INSERT OR UPDATE OF lot_id, submitted_at ON bids
+DEFERRABLE INITIALLY IMMEDIATE
+FOR EACH ROW
+EXECUTE FUNCTION enforce_bid_submission_window();
+
+CREATE CONSTRAINT TRIGGER ct_executors_award_window
+AFTER INSERT OR UPDATE OF lot_id, awarded_at ON executors
+DEFERRABLE INITIALLY IMMEDIATE
+FOR EACH ROW
+EXECUTE FUNCTION enforce_executor_award_window();
+
+CREATE CONSTRAINT TRIGGER ct_tenders_related_timing
+AFTER UPDATE OF published_at, submission_deadline_at ON tenders
+DEFERRABLE INITIALLY IMMEDIATE
+FOR EACH ROW
+EXECUTE FUNCTION revalidate_tender_related_timing();
+
+CREATE CONSTRAINT TRIGGER ct_lots_related_timing
+AFTER UPDATE OF tender_id ON lots
+DEFERRABLE INITIALLY IMMEDIATE
+FOR EACH ROW
+EXECUTE FUNCTION revalidate_lot_related_timing();
+
+COMMENT ON TRIGGER ct_bids_submission_window ON bids IS
+    'Keeps bid timestamps inside the publication/submission window.';
+COMMENT ON TRIGGER ct_executors_award_window ON executors IS
+    'Prevents award timestamps before the submission deadline.';
+COMMENT ON TRIGGER ct_tenders_related_timing ON tenders IS
+    'Revalidates related bids and awards after tender date changes.';
+COMMENT ON TRIGGER ct_lots_related_timing ON lots IS
+    'Revalidates related bids and awards after moving a lot to another tender.';
 
 CREATE INDEX idx_tenders_customer_company
     ON tenders (customer_company_id);

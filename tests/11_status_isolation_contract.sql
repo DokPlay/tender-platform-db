@@ -156,6 +156,15 @@ BEGIN
     IF EXISTS (
         SELECT 1
           FROM v_customer_efficiency_last_six_months
+         WHERE currency_code = 'CAD'
+    ) THEN
+        RAISE EXCEPTION
+            'Terminated executor leaked into customer efficiency';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+          FROM v_customer_efficiency_last_six_months
          WHERE currency_code = 'NZD'
     ) THEN
         RAISE EXCEPTION

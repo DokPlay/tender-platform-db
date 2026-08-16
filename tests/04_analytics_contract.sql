@@ -187,6 +187,7 @@ BEGIN
          WHERE report_month = previous_month
            AND customer_rank = 1
            AND customer_company_id = 2
+           AND customer_name = 'Городская клиническая больница'
            AND currency_code = 'RUB'
            AND completed_lot_count = 2
            AND average_admitted_bidders = 2.50
@@ -204,6 +205,7 @@ BEGIN
          WHERE report_month = previous_month
            AND customer_rank = 2
            AND customer_company_id = 1
+           AND customer_name = 'Федеральное агентство инфраструктуры'
            AND currency_code = 'RUB'
            AND completed_lot_count = 3
            AND average_admitted_bidders = 2.00
@@ -221,6 +223,7 @@ BEGIN
          WHERE report_month = (previous_month - INTERVAL '2 months')::date
            AND customer_rank = 1
            AND customer_company_id = 1
+           AND customer_name = 'Федеральное агентство инфраструктуры'
            AND completed_lot_count = 1
            AND average_admitted_bidders = 2.00
            AND initial_amount = 400000.00

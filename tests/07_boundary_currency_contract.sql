@@ -51,7 +51,8 @@ OVERRIDING SYSTEM VALUE
 VALUES
     (2201, 2201, 1, 'Ровно на нижней границе', 120.00, 'EUR', 'completed'),
     (2202, 2201, 2, 'Равная сумма внутри периода', 120.00, 'EUR', 'completed'),
-    (2203, 2201, 3, 'Ровно на верхней границе', 10000.00, 'EUR', 'completed');
+    (2203, 2201, 3, 'Ровно на верхней границе', 10000.00, 'EUR', 'completed'),
+    (2204, 2201, 4, 'Активный результат со статусом awarded', 60.00, 'CHF', 'awarded');
 
 WITH report_bounds AS (
     SELECT
@@ -78,6 +79,9 @@ SELECT 2202, 2202, 4, 100.00, bounds.period_start + INTERVAL '1 day', 'completed
   FROM report_bounds bounds
 UNION ALL
 SELECT 2203, 2203, 5, 9999.00, bounds.period_end, 'completed'
+  FROM report_bounds bounds
+UNION ALL
+SELECT 2204, 2204, 6, 50.00, bounds.period_start + INTERVAL '2 days', 'awarded'
   FROM report_bounds bounds;
 
 DO $test$
@@ -121,6 +125,19 @@ BEGIN
            AND company_id = 4
     ) THEN
         RAISE EXCEPTION 'EUR ties or Moscow month boundaries are not deterministic';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+          FROM v_top_companies_previous_month
+         WHERE currency_code = 'CHF'
+           AND rank_in_currency = 1
+           AND company_id = 6
+           AND total_awarded_amount = 50.00
+           AND won_lot_count = 1
+           AND won_tender_count = 1
+    ) THEN
+        RAISE EXCEPTION 'Active awarded-only result is missing from top companies';
     END IF;
 END
 $test$;

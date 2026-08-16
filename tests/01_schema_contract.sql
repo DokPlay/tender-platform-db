@@ -4,10 +4,12 @@ DO $test$
 DECLARE
     missing_tables text[];
     invalid_columns text[];
+    invalid_defaults text[];
     invalid_primary_keys text[];
     invalid_constraints text[];
     invalid_indexes text[];
     invalid_foreign_keys text[];
+    invalid_triggers text[];
     unindexed_foreign_keys text[];
     foreign_key_count integer;
 BEGIN
@@ -132,6 +134,70 @@ BEGIN
             array_to_string(invalid_columns, ', ');
     END IF;
 
+    WITH required_defaults AS (
+        SELECT *
+          FROM (
+              VALUES
+                  ('companies', 'created_at', 'CURRENT_TIMESTAMP'),
+                  ('tenders', 'source_system', $default$'zakupki.gov.ru'::text$default$),
+                  ('tenders', 'created_at', 'CURRENT_TIMESTAMP'),
+                  ('lots', 'currency_code', $default$'RUB'::bpchar$default$),
+                  ('lots', 'created_at', 'CURRENT_TIMESTAMP'),
+                  ('bids', 'version_no', '1'),
+                  ('bids', 'created_at', 'CURRENT_TIMESTAMP'),
+                  ('executors', 'created_at', 'CURRENT_TIMESTAMP')
+          ) AS expected(table_name, column_name, default_expression)
+    ),
+    actual_defaults AS (
+        SELECT
+            table_info.relname::text AS table_name,
+            attribute_info.attname::text AS column_name,
+            pg_get_expr(
+                default_info.adbin,
+                default_info.adrelid
+            ) AS default_expression
+        FROM pg_attrdef default_info
+        JOIN pg_class table_info
+          ON table_info.oid = default_info.adrelid
+        JOIN pg_namespace schema_info
+          ON schema_info.oid = table_info.relnamespace
+        JOIN pg_attribute attribute_info
+          ON attribute_info.attrelid = default_info.adrelid
+         AND attribute_info.attnum = default_info.adnum
+        WHERE schema_info.nspname = 'tender_platform'
+          AND table_info.relkind = 'r'
+    ),
+    default_differences AS (
+        SELECT
+            expected.table_name || '.' || expected.column_name AS item
+        FROM required_defaults expected
+        LEFT JOIN actual_defaults actual
+          ON actual.table_name = expected.table_name
+         AND actual.column_name = expected.column_name
+         AND actual.default_expression = expected.default_expression
+        WHERE actual.column_name IS NULL
+
+        UNION ALL
+
+        SELECT
+            actual.table_name || '.' || actual.column_name AS item
+        FROM actual_defaults actual
+        LEFT JOIN required_defaults expected
+          ON expected.table_name = actual.table_name
+         AND expected.column_name = actual.column_name
+         AND expected.default_expression = actual.default_expression
+        WHERE expected.column_name IS NULL
+    )
+    SELECT array_agg(item ORDER BY item)
+      INTO invalid_defaults
+      FROM default_differences;
+
+    IF invalid_defaults IS NOT NULL THEN
+        RAISE EXCEPTION
+            'Missing, unexpected, or incorrectly defined defaults: %',
+            array_to_string(invalid_defaults, ', ');
+    END IF;
+
     WITH required_primary_keys AS (
         SELECT *
           FROM (
@@ -190,36 +256,50 @@ BEGIN
           FROM (
               VALUES
                   ('uq_companies_tax_id', 'companies', 'u', $definition$UNIQUE (tax_id)$definition$),
-                  ('ck_companies_name_not_blank', 'companies', 'c', $definition$CHECK (btrim(name) <> ''::text)$definition$),
-                  ('ck_companies_tax_id_not_blank', 'companies', 'c', $definition$CHECK (btrim(tax_id) <> ''::text)$definition$),
+                  ('ck_companies_name_not_blank', 'companies', 'c', $definition$CHECK (tender_platform.has_non_whitespace(name))$definition$),
+                  ('ck_companies_name_canonical_edges', 'companies', 'c', $definition$CHECK (tender_platform.has_canonical_edges(name))$definition$),
+                  ('ck_companies_tax_id_not_blank', 'companies', 'c', $definition$CHECK (tender_platform.has_non_whitespace(tax_id))$definition$),
+                  ('ck_companies_tax_id_canonical_edges', 'companies', 'c', $definition$CHECK (tender_platform.has_canonical_edges(tax_id))$definition$),
+                  ('ck_companies_finite_times', 'companies', 'c', $definition$CHECK (isfinite(created_at))$definition$),
 
                   ('uq_tenders_source_external', 'tenders', 'u', $definition$UNIQUE (source_system, external_id)$definition$),
-                  ('ck_tenders_source_not_blank', 'tenders', 'c', $definition$CHECK (btrim(source_system) <> ''::text)$definition$),
-                  ('ck_tenders_external_id_not_blank', 'tenders', 'c', $definition$CHECK (btrim(external_id) <> ''::text)$definition$),
-                  ('ck_tenders_procurement_number_not_blank', 'tenders', 'c', $definition$CHECK (btrim(procurement_number) <> ''::text)$definition$),
-                  ('ck_tenders_title_not_blank', 'tenders', 'c', $definition$CHECK (btrim(title) <> ''::text)$definition$),
+                  ('ck_tenders_source_not_blank', 'tenders', 'c', $definition$CHECK (tender_platform.has_non_whitespace(source_system))$definition$),
+                  ('ck_tenders_source_canonical_edges', 'tenders', 'c', $definition$CHECK (tender_platform.has_canonical_edges(source_system))$definition$),
+                  ('ck_tenders_external_id_not_blank', 'tenders', 'c', $definition$CHECK (tender_platform.has_non_whitespace(external_id))$definition$),
+                  ('ck_tenders_external_id_canonical_edges', 'tenders', 'c', $definition$CHECK (tender_platform.has_canonical_edges(external_id))$definition$),
+                  ('ck_tenders_procurement_number_not_blank', 'tenders', 'c', $definition$CHECK (tender_platform.has_non_whitespace(procurement_number))$definition$),
+                  ('ck_tenders_procurement_number_canonical_edges', 'tenders', 'c', $definition$CHECK (tender_platform.has_canonical_edges(procurement_number))$definition$),
+                  ('ck_tenders_title_not_blank', 'tenders', 'c', $definition$CHECK (tender_platform.has_non_whitespace(title))$definition$),
+                  ('ck_tenders_title_canonical_edges', 'tenders', 'c', $definition$CHECK (tender_platform.has_canonical_edges(title))$definition$),
                   ('ck_tenders_status', 'tenders', 'c', $definition$CHECK (status = ANY (ARRAY['planned'::text, 'published'::text, 'bidding'::text, 'evaluation'::text, 'completed'::text, 'cancelled'::text]))$definition$),
                   ('ck_tenders_submission_window', 'tenders', 'c', $definition$CHECK (submission_deadline_at >= published_at)$definition$),
                   ('ck_tenders_completion_time', 'tenders', 'c', $definition$CHECK (completed_at IS NULL OR completed_at >= published_at)$definition$),
                   ('ck_tenders_completed_state', 'tenders', 'c', $definition$CHECK (status <> 'completed'::text OR completed_at IS NOT NULL AND completed_at >= submission_deadline_at)$definition$),
+                  ('ck_tenders_finite_times', 'tenders', 'c', $definition$CHECK (isfinite(published_at) AND isfinite(submission_deadline_at) AND (completed_at IS NULL OR isfinite(completed_at)) AND (source_updated_at IS NULL OR isfinite(source_updated_at)) AND isfinite(created_at))$definition$),
 
                   ('uq_lots_tender_number', 'lots', 'u', $definition$UNIQUE (tender_id, lot_number)$definition$),
                   ('ck_lots_number', 'lots', 'c', $definition$CHECK (lot_number > 0)$definition$),
-                  ('ck_lots_title_not_blank', 'lots', 'c', $definition$CHECK (btrim(title) <> ''::text)$definition$),
+                  ('ck_lots_title_not_blank', 'lots', 'c', $definition$CHECK (tender_platform.has_non_whitespace(title))$definition$),
+                  ('ck_lots_title_canonical_edges', 'lots', 'c', $definition$CHECK (tender_platform.has_canonical_edges(title))$definition$),
                   ('ck_lots_initial_price', 'lots', 'c', $definition$CHECK (initial_price <> 'NaN'::numeric AND initial_price >= 0::numeric)$definition$),
                   ('ck_lots_currency_code', 'lots', 'c', $definition$CHECK (currency_code ~ '^[A-Z]{3}$'::text)$definition$),
                   ('ck_lots_status', 'lots', 'c', $definition$CHECK (status = ANY (ARRAY['open'::text, 'evaluation'::text, 'awarded'::text, 'completed'::text, 'cancelled'::text]))$definition$),
+                  ('ck_lots_finite_times', 'lots', 'c', $definition$CHECK (isfinite(created_at))$definition$),
 
                   ('uq_bids_lot_bidder_version', 'bids', 'u', $definition$UNIQUE (lot_id, bidder_company_id, version_no)$definition$),
                   ('ck_bids_version', 'bids', 'c', $definition$CHECK (version_no > 0)$definition$),
-                  ('ck_bids_source_id_not_blank', 'bids', 'c', $definition$CHECK (source_bid_id IS NULL OR btrim(source_bid_id) <> ''::text)$definition$),
+                  ('ck_bids_source_id_not_blank', 'bids', 'c', $definition$CHECK (source_bid_id IS NULL OR tender_platform.has_non_whitespace(source_bid_id))$definition$),
+                  ('ck_bids_source_id_canonical_edges', 'bids', 'c', $definition$CHECK (source_bid_id IS NULL OR tender_platform.has_canonical_edges(source_bid_id))$definition$),
                   ('ck_bids_amount', 'bids', 'c', $definition$CHECK (amount <> 'NaN'::numeric AND amount >= 0::numeric)$definition$),
                   ('ck_bids_status', 'bids', 'c', $definition$CHECK (status = ANY (ARRAY['submitted'::text, 'admitted'::text, 'rejected'::text, 'withdrawn'::text, 'superseded'::text]))$definition$),
+                  ('ck_bids_finite_times', 'bids', 'c', $definition$CHECK (isfinite(submitted_at) AND isfinite(created_at))$definition$),
 
                   ('uq_executors_lot', 'executors', 'u', $definition$UNIQUE (lot_id)$definition$),
                   ('ck_executors_awarded_amount', 'executors', 'c', $definition$CHECK (awarded_amount <> 'NaN'::numeric AND awarded_amount >= 0::numeric)$definition$),
                   ('ck_executors_status', 'executors', 'c', $definition$CHECK (status = ANY (ARRAY['awarded'::text, 'contract_signed'::text, 'performing'::text, 'completed'::text, 'terminated'::text]))$definition$),
-                  ('ck_executors_contract_number_not_blank', 'executors', 'c', $definition$CHECK (contract_number IS NULL OR btrim(contract_number) <> ''::text)$definition$)
+                  ('ck_executors_contract_number_not_blank', 'executors', 'c', $definition$CHECK (contract_number IS NULL OR tender_platform.has_non_whitespace(contract_number))$definition$),
+                  ('ck_executors_contract_number_canonical_edges', 'executors', 'c', $definition$CHECK (contract_number IS NULL OR tender_platform.has_canonical_edges(contract_number))$definition$),
+                  ('ck_executors_finite_times', 'executors', 'c', $definition$CHECK (isfinite(awarded_at) AND isfinite(created_at))$definition$)
           ) AS expected(
               constraint_name,
               table_name,
@@ -243,19 +323,37 @@ BEGIN
           ON schema_info.oid = table_info.relnamespace
         WHERE schema_info.nspname = 'tender_platform'
           AND constraint_info.contype IN ('u', 'c')
+    ),
+    constraint_differences AS (
+        SELECT expected.constraint_name AS item
+          FROM required_constraints expected
+          LEFT JOIN actual_constraints actual
+            ON actual.constraint_name = expected.constraint_name
+           AND actual.table_name = expected.table_name
+           AND actual.constraint_type = expected.constraint_type
+           AND actual.definition = expected.definition
+           AND actual.convalidated
+           AND NOT actual.condeferrable
+           AND NOT actual.condeferred
+         WHERE actual.constraint_name IS NULL
+
+        UNION ALL
+
+        SELECT actual.constraint_name AS item
+          FROM actual_constraints actual
+          LEFT JOIN required_constraints expected
+            ON expected.constraint_name = actual.constraint_name
+           AND expected.table_name = actual.table_name
+           AND expected.constraint_type = actual.constraint_type
+           AND expected.definition = actual.definition
+           AND actual.convalidated
+           AND NOT actual.condeferrable
+           AND NOT actual.condeferred
+         WHERE expected.constraint_name IS NULL
     )
-    SELECT array_agg(expected.constraint_name ORDER BY expected.constraint_name)
+    SELECT array_agg(item ORDER BY item)
       INTO invalid_constraints
-      FROM required_constraints expected
-      LEFT JOIN actual_constraints actual
-        ON actual.constraint_name = expected.constraint_name
-       AND actual.table_name = expected.table_name
-       AND actual.constraint_type = expected.constraint_type
-       AND actual.definition = expected.definition
-       AND actual.convalidated
-       AND NOT actual.condeferrable
-       AND NOT actual.condeferred
-     WHERE actual.constraint_name IS NULL;
+      FROM constraint_differences;
 
     IF invalid_constraints IS NOT NULL THEN
         RAISE EXCEPTION
@@ -331,10 +429,9 @@ BEGIN
       FROM pg_constraint constraint_info
       JOIN pg_class table_info
         ON table_info.oid = constraint_info.conrelid
-      JOIN pg_namespace schema_info
+     JOIN pg_namespace schema_info
         ON schema_info.oid = table_info.relnamespace
      WHERE schema_info.nspname = 'tender_platform'
-       AND table_info.relname IN ('tenders', 'lots', 'bids', 'executors')
        AND constraint_info.contype = 'f';
 
     IF foreign_key_count <> 6 THEN
@@ -461,6 +558,121 @@ BEGIN
         RAISE EXCEPTION
             'Missing or incorrectly defined foreign keys: %',
             array_to_string(invalid_foreign_keys, ', ');
+    END IF;
+
+    WITH required_triggers AS (
+        SELECT *
+          FROM (
+              VALUES
+                  (
+                      'ct_bids_submission_window',
+                      'bids',
+                      'enforce_bid_submission_window',
+                      21::smallint,
+                      '2 7'
+                  ),
+                  (
+                      'ct_executors_award_window',
+                      'executors',
+                      'enforce_executor_award_window',
+                      21::smallint,
+                      '2 5'
+                  ),
+                  (
+                      'ct_lots_related_timing',
+                      'lots',
+                      'revalidate_lot_related_timing',
+                      17::smallint,
+                      '2'
+                  ),
+                  (
+                      'ct_tenders_related_timing',
+                      'tenders',
+                      'revalidate_tender_related_timing',
+                      17::smallint,
+                      '8 9'
+                  )
+          ) AS expected(
+              trigger_name,
+              table_name,
+              function_name,
+              trigger_type,
+              update_columns
+          )
+    ),
+    actual_triggers AS (
+        SELECT
+            trigger_info.tgname::text AS trigger_name,
+            table_info.relname::text AS table_name,
+            function_info.proname::text AS function_name,
+            function_schema.nspname::text AS function_schema,
+            trigger_info.tgtype AS trigger_type,
+            trigger_info.tgattr::text AS update_columns,
+            trigger_info.tgdeferrable,
+            trigger_info.tginitdeferred,
+            trigger_info.tgenabled
+        FROM pg_trigger trigger_info
+        JOIN pg_class table_info
+          ON table_info.oid = trigger_info.tgrelid
+        JOIN pg_namespace table_schema
+          ON table_schema.oid = table_info.relnamespace
+        JOIN pg_proc function_info
+          ON function_info.oid = trigger_info.tgfoid
+        JOIN pg_namespace function_schema
+          ON function_schema.oid = function_info.pronamespace
+        WHERE table_schema.nspname = 'tender_platform'
+          AND NOT trigger_info.tgisinternal
+    ),
+    trigger_differences AS (
+        SELECT expected.trigger_name AS item
+          FROM required_triggers expected
+          LEFT JOIN actual_triggers actual
+            ON actual.trigger_name = expected.trigger_name
+           AND actual.table_name = expected.table_name
+           AND actual.function_name = expected.function_name
+           AND actual.function_schema = 'tender_platform'
+           AND actual.trigger_type = expected.trigger_type
+           AND actual.update_columns = expected.update_columns
+           AND actual.tgdeferrable
+           AND NOT actual.tginitdeferred
+           AND actual.tgenabled = 'O'
+         WHERE actual.trigger_name IS NULL
+
+        UNION ALL
+
+        SELECT actual.trigger_name AS item
+          FROM actual_triggers actual
+          LEFT JOIN required_triggers expected
+            ON expected.trigger_name = actual.trigger_name
+           AND expected.table_name = actual.table_name
+           AND expected.function_name = actual.function_name
+           AND actual.function_schema = 'tender_platform'
+           AND expected.trigger_type = actual.trigger_type
+           AND expected.update_columns = actual.update_columns
+           AND actual.tgdeferrable
+           AND NOT actual.tginitdeferred
+           AND actual.tgenabled = 'O'
+         WHERE expected.trigger_name IS NULL
+    )
+    SELECT array_agg(item ORDER BY item)
+      INTO invalid_triggers
+      FROM trigger_differences;
+
+    IF invalid_triggers IS NOT NULL THEN
+        RAISE EXCEPTION
+            'Missing, unexpected, or incorrectly defined lifecycle triggers: %',
+            array_to_string(invalid_triggers, ', ');
+    END IF;
+
+    IF position(
+        'ORDER BY company_totals.total_awarded_amount DESC, company_totals.company_id'
+        IN pg_get_viewdef(
+            'tender_platform.v_top_companies_previous_month'::regclass,
+            true
+        )
+    ) = 0 THEN
+        RAISE EXCEPTION
+            'Top-company view must use company_id as deterministic tie-breaker';
     END IF;
 
     SELECT array_agg(constraint_info.conname ORDER BY constraint_info.conname)

@@ -7,6 +7,7 @@ calendar month. Month boundaries are calculated in Europe/Moscow.
 Awards are compared only inside one currency. Cancelled tenders and lots are
 excluded even if an imported award still has an active status. row_number()
 returns up to three rows per currency and resolves equal totals by company ID.
+The company name is joined only after aggregation and top-three filtering.
 */
 CREATE OR REPLACE VIEW tender_platform.v_top_companies_previous_month AS
 WITH report_bounds AS (
@@ -21,8 +22,7 @@ WITH report_bounds AS (
 ),
 company_totals AS (
     SELECT
-        company.id AS company_id,
-        company.name AS company_name,
+        executor.company_id,
         lot.currency_code,
         sum(executor.awarded_amount) AS total_awarded_amount,
         count(*) AS won_lot_count,
@@ -30,8 +30,6 @@ company_totals AS (
         bounds.period_start,
         bounds.period_end
     FROM tender_platform.executors executor
-    JOIN tender_platform.companies company
-      ON company.id = executor.company_id
     JOIN tender_platform.lots lot
       ON lot.id = executor.lot_id
     JOIN tender_platform.tenders tender
@@ -43,8 +41,7 @@ company_totals AS (
       AND executor.awarded_at >= bounds.period_start
       AND executor.awarded_at < bounds.period_end
     GROUP BY
-        company.id,
-        company.name,
+        executor.company_id,
         lot.currency_code,
         bounds.period_start,
         bounds.period_end
@@ -56,7 +53,6 @@ ranked_companies AS (
             ORDER BY total_awarded_amount DESC, company_id
         ) AS rank_in_currency,
         company_id,
-        company_name,
         currency_code,
         total_awarded_amount,
         won_lot_count,
@@ -66,17 +62,19 @@ ranked_companies AS (
     FROM company_totals
 )
 SELECT
-    rank_in_currency,
-    company_id,
-    company_name,
-    currency_code,
-    total_awarded_amount,
-    won_lot_count,
-    won_tender_count,
-    period_start,
-    period_end
-FROM ranked_companies
-WHERE rank_in_currency <= 3;
+    ranked.rank_in_currency,
+    ranked.company_id,
+    company.name AS company_name,
+    ranked.currency_code,
+    ranked.total_awarded_amount,
+    ranked.won_lot_count,
+    ranked.won_tender_count,
+    ranked.period_start,
+    ranked.period_end
+FROM ranked_companies ranked
+JOIN tender_platform.companies company
+  ON company.id = ranked.company_id
+WHERE ranked.rank_in_currency <= 3;
 
 SELECT *
 FROM tender_platform.v_top_companies_previous_month

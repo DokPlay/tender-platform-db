@@ -45,7 +45,10 @@ SELECT
     'completed',
     fixture.awarded_at - INTERVAL '10 days',
     fixture.awarded_at - INTERVAL '1 day',
-    fixture.awarded_at
+    CASE
+        WHEN fixture.id = 2401 THEN fixture.awarded_at + INTERVAL '1 month'
+        ELSE fixture.awarded_at
+    END
 FROM fixtures fixture;
 
 INSERT INTO lots (
