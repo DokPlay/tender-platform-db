@@ -83,8 +83,8 @@ The script:
 5. loads reproducible sample data;
 6. runs and verifies both deliverable analytical queries;
 7. checks cancelled and terminated results, independent tender and lot statuses, company names, exact cent-level amounts, zero-value awards, tied rankings, `NULLS LAST`, the latest bid version, the report-month source, average rounding, currencies, and period boundaries;
-8. checks the complete Unicode White_Space set, finite timestamps, business defaults, final-state semantics of deferred lifecycle constraints, and cross-table bid and award timing rules;
-9. reproduces a concurrent deadline update and award in two parallel sessions and verifies that integrity is preserved;
+8. checks the complete Unicode White_Space set, finite timestamps, business defaults, final-state semantics of deferred lifecycle constraints (including identity-key changes), and cross-table bid and award timing rules;
+9. reproduces concurrent tender-date changes against both an award and a bid in two parallel sessions and verifies that integrity is preserved;
 10. analyzes JSON plans for 60,000 lots and 240,000 bids: the `awarded_at` range must remain an index condition, and admitted bids must use a covering `Index Only Scan` with no heap fetches;
 11. proves that the internal schema component cannot be run directly and leave tables in `public`;
 12. deliberately breaks the second installation stage to prove a complete rollback, and verifies that a repeated clean-only installation fails safely without losing existing data;

@@ -428,13 +428,13 @@ END
 $function$;
 
 CREATE CONSTRAINT TRIGGER ct_bids_submission_window
-AFTER INSERT OR UPDATE OF lot_id, submitted_at ON bids
+AFTER INSERT OR UPDATE OF id, lot_id, submitted_at ON bids
 DEFERRABLE INITIALLY IMMEDIATE
 FOR EACH ROW
 EXECUTE FUNCTION enforce_bid_submission_window();
 
 CREATE CONSTRAINT TRIGGER ct_executors_award_window
-AFTER INSERT OR UPDATE OF lot_id, awarded_at ON executors
+AFTER INSERT OR UPDATE OF id, lot_id, awarded_at ON executors
 DEFERRABLE INITIALLY IMMEDIATE
 FOR EACH ROW
 EXECUTE FUNCTION enforce_executor_award_window();

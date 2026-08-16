@@ -52,7 +52,8 @@ INSERT INTO lots (id, tender_id, lot_number, title, initial_price, currency_code
 OVERRIDING SYSTEM VALUE
 VALUES
     (2801, 2801, 1, 'Lifecycle lot', 100.00, 'RUB', 'completed'),
-    (2802, 2801, 2, 'Deferred executor repair lot', 100.00, 'RUB', 'completed');
+    (2802, 2801, 2, 'Deferred executor repair lot', 100.00, 'RUB', 'completed'),
+    (2803, 2801, 3, 'Deferred identity-change lot', 100.00, 'RUB', 'completed');
 
 DO $test$
 DECLARE
@@ -243,6 +244,65 @@ BEGIN
      WHERE id = 2801;
 
     SET CONSTRAINTS ct_lots_related_timing IMMEDIATE;
+
+    BEGIN
+        SET CONSTRAINTS ct_bids_submission_window DEFERRED;
+
+        INSERT INTO bids (
+            id, lot_id, bidder_company_id, version_no,
+            amount, submitted_at, status
+        )
+        OVERRIDING SYSTEM VALUE
+        VALUES (
+            2830, 2803, 2802, 3,
+            93.00, timestamptz '2026-01-15 12:00:00+03', 'admitted'
+        );
+
+        UPDATE bids
+           SET id = DEFAULT
+         WHERE id = 2830;
+
+        SET CONSTRAINTS ct_bids_submission_window IMMEDIATE;
+        RAISE EXCEPTION
+            'Bid identity change bypassed the deferred submission window';
+    EXCEPTION
+        WHEN check_violation THEN
+            GET STACKED DIAGNOSTICS violated_constraint = CONSTRAINT_NAME;
+            IF violated_constraint IS DISTINCT FROM 'ct_bids_submission_window' THEN
+                RAISE EXCEPTION
+                    'Bid identity change violated unexpected constraint %',
+                    violated_constraint;
+            END IF;
+    END;
+
+    BEGIN
+        SET CONSTRAINTS ct_executors_award_window DEFERRED;
+
+        INSERT INTO executors (
+            id, lot_id, company_id, awarded_amount, awarded_at, status
+        )
+        OVERRIDING SYSTEM VALUE
+        VALUES (
+            2831, 2803, 2802, 93.00,
+            timestamptz '2026-01-19 12:00:00+03', 'completed'
+        );
+
+        UPDATE executors
+           SET id = DEFAULT
+         WHERE id = 2831;
+
+        SET CONSTRAINTS ct_executors_award_window IMMEDIATE;
+        RAISE EXCEPTION
+            'Executor identity change bypassed the deferred award window';
+    EXCEPTION
+        WHEN check_violation THEN
+            GET STACKED DIAGNOSTICS violated_constraint = CONSTRAINT_NAME;
+            IF violated_constraint IS DISTINCT FROM 'ct_executors_award_window' THEN
+                RAISE EXCEPTION
+                    'Executor identity change violated unexpected constraint %',
+                    violated_constraint;
+            END IF;
+    END;
 
     BEGIN
         UPDATE lots

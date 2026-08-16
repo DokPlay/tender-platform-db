@@ -569,14 +569,14 @@ BEGIN
                       'bids',
                       'enforce_bid_submission_window',
                       21::smallint,
-                      '2 7'
+                      '1 2 7'
                   ),
                   (
                       'ct_executors_award_window',
                       'executors',
                       'enforce_executor_award_window',
                       21::smallint,
-                      '2 5'
+                      '1 2 5'
                   ),
                   (
                       'ct_lots_related_timing',

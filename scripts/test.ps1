@@ -53,17 +53,37 @@ function Find-PlanNodeByIndex {
     return $null
 }
 
+function Remove-SqlComments {
+    param([string]$Sql)
+
+    $withoutBlockComments = [regex]::Replace(
+        $Sql,
+        '(?s)/\*.*?\*/',
+        ''
+    )
+
+    return [regex]::Replace(
+        $withoutBlockComments,
+        '(?m)--[^\r\n]*$',
+        ''
+    )
+}
+
 function Assert-CanonicalQueryOutputOrder {
     Write-Output 'Running canonical efficiency output-order contract'
 
     $efficiencySql = Get-Content -Raw -LiteralPath (
         Join-Path $projectRoot 'sql\analytics\02_customer_efficiency.sql'
     )
-
-    if ($efficiencySql -notmatch (
+    $executableEfficiencySql = Remove-SqlComments -Sql $efficiencySql
+    $canonicalFinalSelect = (
+        '(?is)SELECT\s+\*\s+FROM\s+' +
+        'tender_platform\.v_customer_efficiency_last_six_months\s+' +
         'ORDER BY\s+report_month DESC,\s*currency_code,\s*' +
-        'customer_rank NULLS LAST,\s*customer_company_id;'
-    )) {
+        'customer_rank NULLS LAST,\s*customer_company_id;\s*\z'
+    )
+
+    if ($executableEfficiencySql -notmatch $canonicalFinalSelect) {
         throw 'Canonical customer-efficiency output is not totally ordered by customer ID'
     }
 
@@ -232,8 +252,118 @@ function Assert-InstallerRerunPreservesState {
     Write-Output 'PASS: rejected installer rerun preserved existing data and views.'
 }
 
+function Invoke-LifecycleRaceContract {
+    param(
+        [string]$RaceName,
+        [string]$SessionAMarker,
+        [string]$SessionASql,
+        [string]$SessionBSql,
+        [string]$ExpectedFailurePattern,
+        [string]$UnexpectedSuccessMessage,
+        [string]$FinalStateSql
+    )
+
+    $sessionA = Start-Job -ScriptBlock {
+        param($TargetContainer, $TargetDatabase, $TargetUser, $Sql)
+
+        $nativeOutput = docker exec $TargetContainer psql `
+            -U $TargetUser `
+            -d $TargetDatabase `
+            -v ON_ERROR_STOP=1 `
+            -c $Sql 2>&1
+
+        [pscustomobject]@{
+            ExitCode = $LASTEXITCODE
+            Output = ($nativeOutput | Out-String)
+        }
+    } -ArgumentList `
+        $containerName, `
+        $concurrencyDatabaseName, `
+        $databaseUser, `
+        $SessionASql
+
+    try {
+        $sessionAIsSleeping = $false
+
+        for ($attempt = 1; $attempt -le 50; $attempt++) {
+            $activityProbe = docker exec $containerName psql `
+                -U $databaseUser `
+                -d $concurrencyDatabaseName `
+                -At `
+                -v ON_ERROR_STOP=1 `
+                -c "SELECT EXISTS (
+                        SELECT 1
+                        FROM pg_stat_activity
+                        WHERE datname = '$concurrencyDatabaseName'
+                          AND query LIKE '%$SessionAMarker%'
+                          AND wait_event = 'PgSleep'
+                    );"
+            Assert-NativeSuccess "$RaceName session A readiness probe"
+
+            if (($activityProbe | Out-String).Trim() -eq 't') {
+                $sessionAIsSleeping = $true
+                break
+            }
+
+            Start-Sleep -Milliseconds 100
+        }
+
+        if (-not $sessionAIsSleeping) {
+            throw "$RaceName session A did not reach the controlled lock window"
+        }
+
+        $sessionBOutput = docker exec $containerName psql `
+            -U $databaseUser `
+            -d $concurrencyDatabaseName `
+            -v ON_ERROR_STOP=1 `
+            -c $SessionBSql 2>&1
+        $sessionBExitCode = $LASTEXITCODE
+
+        Wait-Job -Job $sessionA -Timeout 10 | Out-Null
+        if ($sessionA.State -ne 'Completed') {
+            throw "$RaceName session A did not complete"
+        }
+
+        $sessionAResult = Receive-Job -Job $sessionA
+        if ($sessionAResult.ExitCode -ne 0) {
+            $sessionAResult.Output | Write-Output
+            throw "$RaceName session A failed"
+        }
+
+        if ($sessionBExitCode -eq 0) {
+            throw $UnexpectedSuccessMessage
+        }
+
+        if (($sessionBOutput | Out-String) -notmatch $ExpectedFailurePattern) {
+            $sessionBOutput | Write-Output
+            throw "$RaceName session B failed for an unexpected reason"
+        }
+
+        $finalState = docker exec $containerName psql `
+            -U $databaseUser `
+            -d $concurrencyDatabaseName `
+            -At `
+            -v ON_ERROR_STOP=1 `
+            -c $FinalStateSql
+        Assert-NativeSuccess "$RaceName final-state inspection"
+
+        if (($finalState | Out-String).Trim() -ne 't') {
+            throw "$RaceName left an invalid final state"
+        }
+    }
+    finally {
+        if ($sessionA.State -notin ('Completed', 'Failed', 'Stopped')) {
+            Stop-Job -Job $sessionA | Out-Null
+        }
+
+        Remove-Job -Job $sessionA -Force | Out-Null
+    }
+
+    Write-Output "PASS: $RaceName preserved lifecycle integrity."
+}
+
 function Assert-LifecycleConcurrency {
-    Write-Output 'Running two-session lifecycle concurrency contract'
+    Write-Output 'Running two-session lifecycle concurrency contracts'
 
     docker exec $containerName createdb `
         -U $databaseUser `
@@ -281,8 +411,8 @@ VALUES (910001, 910001, 1, 'Concurrency lot', 100.00, 'RUB', 'completed');
         -c $fixtureSql | Out-Null
     Assert-NativeSuccess 'Concurrency-test fixture creation'
 
-    $sessionASql = @'
-/* lifecycle-concurrency-session-a */
+    $awardSessionASql = @'
+/* lifecycle-concurrency-award-session-a */
 BEGIN;
 SET LOCAL search_path = tender_platform, public;
 UPDATE tenders
@@ -292,120 +422,83 @@ SELECT pg_sleep(3);
 COMMIT;
 '@
 
-    $sessionA = Start-Job -ScriptBlock {
-        param($TargetContainer, $TargetDatabase, $TargetUser, $Sql)
+    $awardSessionBSql = @'
+SET statement_timeout = '10s';
+SET search_path = tender_platform, public;
+INSERT INTO executors (
+    id, lot_id, company_id, awarded_amount, awarded_at, status
+)
+OVERRIDING SYSTEM VALUE
+VALUES (
+    910001, 910001, 910002, 90.00,
+    timestamptz '2026-01-21 12:00:00+03', 'completed'
+);
+'@
 
-        $nativeOutput = docker exec $TargetContainer psql `
-            -U $TargetUser `
-            -d $TargetDatabase `
-            -v ON_ERROR_STOP=1 `
-            -c $Sql 2>&1
+    $awardFinalStateSql = @'
+SELECT submission_deadline_at = timestamptz '2026-01-22 18:00:00+03'
+       AND NOT EXISTS (
+           SELECT 1
+           FROM tender_platform.executors
+           WHERE id = 910001
+       )
+FROM tender_platform.tenders
+WHERE id = 910001;
+'@
 
-        [pscustomobject]@{
-            ExitCode = $LASTEXITCODE
-            Output = ($nativeOutput | Out-String)
-        }
-    } -ArgumentList `
-        $containerName, `
-        $concurrencyDatabaseName, `
-        $databaseUser, `
-        $sessionASql
+    Invoke-LifecycleRaceContract `
+        -RaceName 'Concurrent deadline and award changes' `
+        -SessionAMarker 'lifecycle-concurrency-award-session-a' `
+        -SessionASql $awardSessionASql `
+        -SessionBSql $awardSessionBSql `
+        -ExpectedFailurePattern 'cannot precede the tender submission deadline' `
+        -UnexpectedSuccessMessage 'Concurrent award incorrectly committed against the new deadline' `
+        -FinalStateSql $awardFinalStateSql
 
-    try {
-        $sessionAIsSleeping = $false
+    $bidSessionASql = @'
+/* lifecycle-concurrency-bid-session-a */
+BEGIN;
+SET LOCAL search_path = tender_platform, public;
+UPDATE tenders
+   SET published_at = timestamptz '2026-01-12 09:00:00+03'
+ WHERE id = 910001;
+SELECT pg_sleep(3);
+COMMIT;
+'@
 
-        for ($attempt = 1; $attempt -le 50; $attempt++) {
-            $activityProbe = docker exec $containerName psql `
-                -U $databaseUser `
-                -d $concurrencyDatabaseName `
-                -At `
-                -v ON_ERROR_STOP=1 `
-                -c "SELECT EXISTS (
-                        SELECT 1
-                        FROM pg_stat_activity
-                        WHERE datname = '$concurrencyDatabaseName'
-                          AND query LIKE '%lifecycle-concurrency-session-a%'
-                          AND wait_event = 'PgSleep'
-                    );"
-            Assert-NativeSuccess 'Concurrency-test session A readiness probe'
+    $bidSessionBSql = @'
+SET statement_timeout = '10s';
+SET search_path = tender_platform, public;
+INSERT INTO bids (
+    id, lot_id, bidder_company_id, version_no,
+    amount, submitted_at, status
+)
+OVERRIDING SYSTEM VALUE
+VALUES (
+    910001, 910001, 910002, 1,
+    95.00, timestamptz '2026-01-11 12:00:00+03', 'admitted'
+);
+'@
 
-            if (($activityProbe | Out-String).Trim() -eq 't') {
-                $sessionAIsSleeping = $true
-                break
-            }
+    $bidFinalStateSql = @'
+SELECT published_at = timestamptz '2026-01-12 09:00:00+03'
+       AND NOT EXISTS (
+           SELECT 1
+           FROM tender_platform.bids
+           WHERE id = 910001
+       )
+FROM tender_platform.tenders
+WHERE id = 910001;
+'@
 
-            Start-Sleep -Milliseconds 100
-        }
-
-        if (-not $sessionAIsSleeping) {
-            throw 'Concurrency-test session A did not reach the controlled lock window'
-        }
-
-        $sessionBOutput = docker exec $containerName psql `
-            -U $databaseUser `
-            -d $concurrencyDatabaseName `
-            -v ON_ERROR_STOP=1 `
-            -c "SET statement_timeout = '10s';
-                SET search_path = tender_platform, public;
-                INSERT INTO executors (
-                    id, lot_id, company_id, awarded_amount, awarded_at, status
-                )
-                OVERRIDING SYSTEM VALUE
-                VALUES (
-                    910001, 910001, 910002, 90.00,
-                    timestamptz '2026-01-21 12:00:00+03', 'completed'
-                );" 2>&1
-        $sessionBExitCode = $LASTEXITCODE
-
-        Wait-Job -Job $sessionA -Timeout 10 | Out-Null
-        if ($sessionA.State -ne 'Completed') {
-            throw 'Concurrency-test session A did not complete'
-        }
-
-        $sessionAResult = Receive-Job -Job $sessionA
-        if ($sessionAResult.ExitCode -ne 0) {
-            $sessionAResult.Output | Write-Output
-            throw 'Concurrency-test session A failed'
-        }
-
-        if ($sessionBExitCode -eq 0) {
-            throw 'Concurrent award incorrectly committed against the new deadline'
-        }
-
-        if (($sessionBOutput | Out-String) -notmatch
-            'cannot precede the tender submission deadline') {
-            $sessionBOutput | Write-Output
-            throw 'Concurrent award failed for an unexpected reason'
-        }
-
-        $finalState = docker exec $containerName psql `
-            -U $databaseUser `
-            -d $concurrencyDatabaseName `
-            -At `
-            -v ON_ERROR_STOP=1 `
-            -c "SELECT submission_deadline_at = timestamptz '2026-01-22 18:00:00+03'
-                    AND NOT EXISTS (
-                        SELECT 1
-                        FROM tender_platform.executors
-                        WHERE id = 910001
-                    )
-                FROM tender_platform.tenders
-                WHERE id = 910001;"
-        Assert-NativeSuccess 'Concurrency-test final-state inspection'
-
-        if (($finalState | Out-String).Trim() -ne 't') {
-            throw 'Concurrent lifecycle operations left an invalid final state'
-        }
-    }
-    finally {
-        if ($sessionA.State -notin ('Completed', 'Failed', 'Stopped')) {
-            Stop-Job -Job $sessionA | Out-Null
-        }
-
-        Remove-Job -Job $sessionA -Force | Out-Null
-    }
-
-    Write-Output 'PASS: concurrent deadline and award changes preserved lifecycle integrity.'
+    Invoke-LifecycleRaceContract `
+        -RaceName 'Concurrent publication and bid changes' `
+        -SessionAMarker 'lifecycle-concurrency-bid-session-a' `
+        -SessionASql $bidSessionASql `
+        -SessionBSql $bidSessionBSql `
+        -ExpectedFailurePattern 'timestamp must be within tender publication and submission deadline' `
+        -UnexpectedSuccessMessage 'Concurrent bid incorrectly committed against the new publication date' `
+        -FinalStateSql $bidFinalStateSql
 }
 
 function Assert-AnalyticalPlans {
