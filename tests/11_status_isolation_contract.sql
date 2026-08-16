@@ -179,6 +179,34 @@ BEGIN
         RAISE EXCEPTION
             'Incomplete lot with completed tender leaked into customer efficiency';
     END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+          FROM v_top_companies_previous_month
+         WHERE currency_code = 'NZD'
+           AND rank_in_currency = 1
+           AND company_id = 3
+           AND total_awarded_amount = 999999.00
+           AND won_lot_count = 1
+           AND won_tender_count = 1
+    ) THEN
+        RAISE EXCEPTION
+            'Valid award on a non-cancelled evaluation tender is missing from top companies';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+          FROM v_top_companies_previous_month
+         WHERE currency_code = 'SEK'
+           AND rank_in_currency = 1
+           AND company_id = 3
+           AND total_awarded_amount = 999999.00
+           AND won_lot_count = 1
+           AND won_tender_count = 1
+    ) THEN
+        RAISE EXCEPTION
+            'Valid award on a non-cancelled evaluation lot is missing from top companies';
+    END IF;
 END
 $test$;
 

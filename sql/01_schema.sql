@@ -24,7 +24,7 @@ LANGUAGE sql
 IMMUTABLE
 STRICT
 PARALLEL SAFE
-RETURN input_value ~ U&'[^[:space:]\00A0]';
+RETURN input_value ~ U&'[^\0009-\000D\0020\0085\00A0\1680\2000-\200A\2028-\2029\202F\205F\3000]';
 
 CREATE FUNCTION has_canonical_edges(input_value text)
 RETURNS boolean
@@ -32,12 +32,12 @@ LANGUAGE sql
 IMMUTABLE
 STRICT
 PARALLEL SAFE
-RETURN input_value !~ U&'(^[[:space:]\00A0])|([[:space:]\00A0]$)';
+RETURN input_value !~ U&'(^[\0009-\000D\0020\0085\00A0\1680\2000-\200A\2028-\2029\202F\205F\3000])|([\0009-\000D\0020\0085\00A0\1680\2000-\200A\2028-\2029\202F\205F\3000]$)';
 
 COMMENT ON FUNCTION has_non_whitespace(text) IS
-    'True when text contains at least one character other than Unicode-aware whitespace.';
+    'True when text contains a character outside the Unicode White_Space property.';
 COMMENT ON FUNCTION has_canonical_edges(text) IS
-    'True when text has no leading or trailing whitespace, including non-breaking space.';
+    'True when text has no leading or trailing Unicode White_Space character.';
 
 CREATE TABLE companies (
     id bigint GENERATED ALWAYS AS IDENTITY,
@@ -253,23 +253,32 @@ LANGUAGE plpgsql
 SET search_path = pg_catalog, tender_platform
 AS $function$
 DECLARE
+    current_submitted_at timestamptz;
     tender_published_at timestamptz;
     tender_deadline_at timestamptz;
 BEGIN
-    SELECT tender.published_at, tender.submission_deadline_at
-      INTO tender_published_at, tender_deadline_at
-      FROM tender_platform.lots lot
+    SELECT
+        bid.submitted_at,
+        tender.published_at,
+        tender.submission_deadline_at
+      INTO
+        current_submitted_at,
+        tender_published_at,
+        tender_deadline_at
+      FROM tender_platform.bids bid
+      JOIN tender_platform.lots lot
+        ON lot.id = bid.lot_id
       JOIN tender_platform.tenders tender
         ON tender.id = lot.tender_id
-     WHERE lot.id = NEW.lot_id
-       FOR SHARE OF lot, tender;
+     WHERE bid.id = NEW.id
+       FOR SHARE OF bid, lot, tender;
 
     IF NOT FOUND THEN
         RETURN NEW;
     END IF;
 
-    IF NEW.submitted_at < tender_published_at
-       OR NEW.submitted_at > tender_deadline_at THEN
+    IF current_submitted_at < tender_published_at
+       OR current_submitted_at > tender_deadline_at THEN
         RAISE EXCEPTION USING
             ERRCODE = '23514',
             CONSTRAINT = 'ct_bids_submission_window',
@@ -289,21 +298,24 @@ LANGUAGE plpgsql
 SET search_path = pg_catalog, tender_platform
 AS $function$
 DECLARE
+    current_awarded_at timestamptz;
     tender_deadline_at timestamptz;
 BEGIN
-    SELECT tender.submission_deadline_at
-      INTO tender_deadline_at
-      FROM tender_platform.lots lot
-      JOIN tender_platform.tenders tender
+    SELECT executor.awarded_at, tender.submission_deadline_at
+      INTO current_awarded_at, tender_deadline_at
+      FROM tender_platform.executors executor
+      JOIN tender_platform.lots lot
+        ON lot.id = executor.lot_id
+     JOIN tender_platform.tenders tender
         ON tender.id = lot.tender_id
-     WHERE lot.id = NEW.lot_id
-       FOR SHARE OF lot, tender;
+     WHERE executor.id = NEW.id
+       FOR SHARE OF executor, lot, tender;
 
     IF NOT FOUND THEN
         RETURN NEW;
     END IF;
 
-    IF NEW.awarded_at < tender_deadline_at THEN
+    IF current_awarded_at < tender_deadline_at THEN
         RAISE EXCEPTION USING
             ERRCODE = '23514',
             CONSTRAINT = 'ct_executors_award_window',
@@ -322,7 +334,20 @@ RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = pg_catalog, tender_platform
 AS $function$
+DECLARE
+    current_published_at timestamptz;
+    current_deadline_at timestamptz;
 BEGIN
+    SELECT tender.published_at, tender.submission_deadline_at
+      INTO current_published_at, current_deadline_at
+      FROM tender_platform.tenders tender
+     WHERE tender.id = NEW.id
+       FOR SHARE;
+
+    IF NOT FOUND THEN
+        RETURN NEW;
+    END IF;
+
     IF EXISTS (
         SELECT 1
           FROM tender_platform.lots lot
@@ -330,8 +355,8 @@ BEGIN
             ON bid.lot_id = lot.id
          WHERE lot.tender_id = NEW.id
            AND (
-               bid.submitted_at < NEW.published_at
-               OR bid.submitted_at > NEW.submission_deadline_at
+               bid.submitted_at < current_published_at
+               OR bid.submitted_at > current_deadline_at
            )
     ) OR EXISTS (
         SELECT 1
@@ -339,7 +364,7 @@ BEGIN
           JOIN tender_platform.executors executor
             ON executor.lot_id = lot.id
          WHERE lot.tender_id = NEW.id
-           AND executor.awarded_at < NEW.submission_deadline_at
+           AND executor.awarded_at < current_deadline_at
     ) THEN
         RAISE EXCEPTION USING
             ERRCODE = '23514',
@@ -365,9 +390,11 @@ DECLARE
 BEGIN
     SELECT tender.published_at, tender.submission_deadline_at
       INTO tender_published_at, tender_deadline_at
-      FROM tender_platform.tenders tender
-     WHERE tender.id = NEW.tender_id
-       FOR SHARE;
+      FROM tender_platform.lots lot
+      JOIN tender_platform.tenders tender
+        ON tender.id = lot.tender_id
+     WHERE lot.id = NEW.id
+       FOR SHARE OF lot, tender;
 
     IF NOT FOUND THEN
         RETURN NEW;

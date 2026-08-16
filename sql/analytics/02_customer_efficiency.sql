@@ -129,4 +129,8 @@ JOIN tender_platform.companies customer
 
 SELECT *
 FROM tender_platform.v_customer_efficiency_last_six_months
-ORDER BY report_month DESC, currency_code, customer_rank;
+ORDER BY
+    report_month DESC,
+    currency_code,
+    customer_rank NULLS LAST,
+    customer_company_id;

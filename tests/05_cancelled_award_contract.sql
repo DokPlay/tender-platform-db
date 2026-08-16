@@ -65,8 +65,8 @@ VALUES
         1,
         'Активный лот отменённого тендера',
         99999999.00,
-        'RUB',
-        'awarded'
+        'XTS',
+        'completed'
     ),
     (
         2002,
@@ -74,7 +74,7 @@ VALUES
         1,
         'Отменённый лот завершённого тендера',
         88888888.00,
-        'RUB',
+        'XUA',
         'cancelled'
     );
 
@@ -117,7 +117,7 @@ BEGIN
         SELECT 1
           FROM v_top_companies_previous_month
          WHERE company_id = 6
-           AND currency_code = 'RUB'
+           AND currency_code = 'XTS'
            AND total_awarded_amount >= 99999999.00
     ) THEN
         RAISE EXCEPTION 'An active award from a cancelled tender leaked into the top report';
@@ -127,10 +127,19 @@ BEGIN
         SELECT 1
           FROM v_top_companies_previous_month
          WHERE company_id = 5
-           AND currency_code = 'RUB'
+           AND currency_code = 'XUA'
            AND total_awarded_amount >= 88888888.00
     ) THEN
         RAISE EXCEPTION 'An active award from a cancelled lot leaked into the top report';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+          FROM v_customer_efficiency_last_six_months
+         WHERE currency_code IN ('XTS', 'XUA')
+    ) THEN
+        RAISE EXCEPTION
+            'Cancelled tender or lot leaked into customer efficiency';
     END IF;
 END
 $test$;

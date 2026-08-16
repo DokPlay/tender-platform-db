@@ -4,18 +4,57 @@ BEGIN;
 SET LOCAL search_path TO tender_platform, public;
 
 DO $test$
+DECLARE
+    whitespace record;
 BEGIN
-    IF tender_platform.has_non_whitespace(E'\t\n') IS DISTINCT FROM false
-       OR tender_platform.has_non_whitespace(U&'\00A0') IS DISTINCT FROM false
-       OR tender_platform.has_non_whitespace('A B') IS DISTINCT FROM true THEN
-        RAISE EXCEPTION 'Unicode-aware non-whitespace detection is incorrect';
-    END IF;
+    FOR whitespace IN
+        SELECT *
+          FROM (
+              VALUES
+                  ('U+0009', U&'\0009'),
+                  ('U+000A', U&'\000A'),
+                  ('U+000B', U&'\000B'),
+                  ('U+000C', U&'\000C'),
+                  ('U+000D', U&'\000D'),
+                  ('U+0020', U&'\0020'),
+                  ('U+0085', U&'\0085'),
+                  ('U+00A0', U&'\00A0'),
+                  ('U+1680', U&'\1680'),
+                  ('U+2000', U&'\2000'),
+                  ('U+2001', U&'\2001'),
+                  ('U+2002', U&'\2002'),
+                  ('U+2003', U&'\2003'),
+                  ('U+2004', U&'\2004'),
+                  ('U+2005', U&'\2005'),
+                  ('U+2006', U&'\2006'),
+                  ('U+2007', U&'\2007'),
+                  ('U+2008', U&'\2008'),
+                  ('U+2009', U&'\2009'),
+                  ('U+200A', U&'\200A'),
+                  ('U+2028', U&'\2028'),
+                  ('U+2029', U&'\2029'),
+                  ('U+202F', U&'\202F'),
+                  ('U+205F', U&'\205F'),
+                  ('U+3000', U&'\3000')
+          ) AS unicode_white_space(code_point, whitespace_value)
+    LOOP
+        IF tender_platform.has_non_whitespace(whitespace.whitespace_value)
+           IS DISTINCT FROM false
+           OR tender_platform.has_canonical_edges(
+               whitespace.whitespace_value || 'A'
+           ) IS DISTINCT FROM false
+           OR tender_platform.has_canonical_edges(
+               'A' || whitespace.whitespace_value
+           ) IS DISTINCT FROM false THEN
+            RAISE EXCEPTION
+                'Unicode White_Space % was not recognized',
+                whitespace.code_point;
+        END IF;
+    END LOOP;
 
-    IF tender_platform.has_canonical_edges(' A') IS DISTINCT FROM false
-       OR tender_platform.has_canonical_edges(E'A\t') IS DISTINCT FROM false
-       OR tender_platform.has_canonical_edges(U&'\00A0A') IS DISTINCT FROM false
+    IF tender_platform.has_non_whitespace('A B') IS DISTINCT FROM true
        OR tender_platform.has_canonical_edges('A B') IS DISTINCT FROM true THEN
-        RAISE EXCEPTION 'Unicode-aware edge-whitespace detection is incorrect';
+        RAISE EXCEPTION 'Internal whitespace handling is incorrect';
     END IF;
 END
 $test$;

@@ -675,6 +675,17 @@ BEGIN
             'Top-company view must use company_id as deterministic tie-breaker';
     END IF;
 
+    IF position(
+        'ORDER BY customer_totals.savings_percent_exact DESC NULLS LAST, customer_totals.customer_company_id'
+        IN pg_get_viewdef(
+            'tender_platform.v_customer_efficiency_last_six_months'::regclass,
+            true
+        )
+    ) = 0 THEN
+        RAISE EXCEPTION
+            'Customer-efficiency view must rank exact values with NULLS LAST and customer ID tie-breaker';
+    END IF;
+
     SELECT array_agg(constraint_info.conname ORDER BY constraint_info.conname)
       INTO unindexed_foreign_keys
       FROM pg_constraint constraint_info

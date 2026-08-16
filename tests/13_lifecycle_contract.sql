@@ -50,7 +50,9 @@ VALUES
 
 INSERT INTO lots (id, tender_id, lot_number, title, initial_price, currency_code, status)
 OVERRIDING SYSTEM VALUE
-VALUES (2801, 2801, 1, 'Lifecycle lot', 100.00, 'RUB', 'completed');
+VALUES
+    (2801, 2801, 1, 'Lifecycle lot', 100.00, 'RUB', 'completed'),
+    (2802, 2801, 2, 'Deferred executor repair lot', 100.00, 'RUB', 'completed');
 
 DO $test$
 DECLARE
@@ -182,6 +184,65 @@ BEGIN
      WHERE id = 2801;
 
     SET CONSTRAINTS ALL IMMEDIATE;
+
+    SET CONSTRAINTS ct_bids_submission_window DEFERRED;
+
+    INSERT INTO bids (
+        id, lot_id, bidder_company_id, version_no,
+        amount, submitted_at, status
+    )
+    OVERRIDING SYSTEM VALUE
+    VALUES (
+        2820, 2801, 2802, 2,
+        94.00, timestamptz '2026-01-09 12:00:00+03', 'admitted'
+    );
+
+    UPDATE bids
+       SET submitted_at = timestamptz '2026-01-17 13:00:00+03'
+     WHERE id = 2820;
+
+    SET CONSTRAINTS ct_bids_submission_window IMMEDIATE;
+
+    SET CONSTRAINTS ct_executors_award_window DEFERRED;
+
+    INSERT INTO executors (
+        id, lot_id, company_id, awarded_amount, awarded_at, status
+    )
+    OVERRIDING SYSTEM VALUE
+    VALUES (
+        2821, 2802, 2802, 94.00,
+        timestamptz '2026-01-19 12:00:00+03', 'completed'
+    );
+
+    UPDATE executors
+       SET awarded_at = timestamptz '2026-01-21 13:00:00+03'
+     WHERE id = 2821;
+
+    SET CONSTRAINTS ct_executors_award_window IMMEDIATE;
+
+    SET CONSTRAINTS ct_tenders_related_timing DEFERRED;
+
+    UPDATE tenders
+       SET published_at = timestamptz '2026-01-18 09:00:00+03'
+     WHERE id = 2801;
+
+    UPDATE tenders
+       SET published_at = timestamptz '2026-01-16 09:00:00+03'
+     WHERE id = 2801;
+
+    SET CONSTRAINTS ct_tenders_related_timing IMMEDIATE;
+
+    SET CONSTRAINTS ct_lots_related_timing DEFERRED;
+
+    UPDATE lots
+       SET tender_id = 2802
+     WHERE id = 2801;
+
+    UPDATE lots
+       SET tender_id = 2801
+     WHERE id = 2801;
+
+    SET CONSTRAINTS ct_lots_related_timing IMMEDIATE;
 
     BEGIN
         UPDATE lots
