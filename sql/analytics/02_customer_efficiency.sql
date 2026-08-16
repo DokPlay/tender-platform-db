@@ -4,8 +4,8 @@
 Query 2. Customer procurement efficiency for the last six fully closed
 calendar months. Eligible report lots are materialized before admitted bids are
 read. A bidder is admitted only when its latest version is admitted. Monetary
-values are aggregated at lot grain, and ranking uses the exact savings ratio
-before that ratio is rounded for display.
+values are aggregated at lot grain, ranking uses the exact savings ratio, and
+the customer name is joined only after aggregation.
 */
 CREATE OR REPLACE VIEW tender_platform.v_customer_efficiency_last_six_months AS
 WITH report_bounds AS (
@@ -25,7 +25,6 @@ eligible_lots AS MATERIALIZED (
             executor.awarded_at AT TIME ZONE 'Europe/Moscow'
         )::date AS report_month,
         tender.customer_company_id,
-        customer.name AS customer_name,
         lot.currency_code,
         lot.id AS lot_id,
         lot.initial_price,
@@ -35,8 +34,6 @@ eligible_lots AS MATERIALIZED (
       ON lot.id = executor.lot_id
     JOIN tender_platform.tenders tender
       ON tender.id = lot.tender_id
-    JOIN tender_platform.companies customer
-      ON customer.id = tender.customer_company_id
     CROSS JOIN report_bounds bounds
     WHERE executor.status IN ('awarded', 'contract_signed', 'performing', 'completed')
       AND tender.status = 'completed'
@@ -65,7 +62,6 @@ lot_metrics AS (
     SELECT
         eligible.report_month,
         eligible.customer_company_id,
-        eligible.customer_name,
         eligible.currency_code,
         eligible.lot_id,
         eligible.initial_price,
@@ -79,7 +75,6 @@ customer_totals AS (
     SELECT
         report_month,
         customer_company_id,
-        customer_name,
         currency_code,
         count(*) AS completed_lot_count,
         round(avg(admitted_bidder_count), 2) AS average_admitted_bidders,
@@ -94,7 +89,6 @@ customer_totals AS (
     GROUP BY
         report_month,
         customer_company_id,
-        customer_name,
         currency_code
 ),
 ranked_customers AS (
@@ -108,7 +102,6 @@ ranked_customers AS (
         END AS customer_rank,
         report_month,
         customer_company_id,
-        customer_name,
         currency_code,
         completed_lot_count,
         average_admitted_bidders,
@@ -119,18 +112,20 @@ ranked_customers AS (
     FROM customer_totals
 )
 SELECT
-    customer_rank,
-    report_month,
-    customer_company_id,
-    customer_name,
-    currency_code,
-    completed_lot_count,
-    average_admitted_bidders,
-    initial_amount,
-    awarded_amount,
-    savings_amount,
-    round(savings_percent_exact, 2) AS savings_percent
-FROM ranked_customers;
+    ranked.customer_rank,
+    ranked.report_month,
+    ranked.customer_company_id,
+    customer.name AS customer_name,
+    ranked.currency_code,
+    ranked.completed_lot_count,
+    ranked.average_admitted_bidders,
+    ranked.initial_amount,
+    ranked.awarded_amount,
+    ranked.savings_amount,
+    round(ranked.savings_percent_exact, 2) AS savings_percent
+FROM ranked_customers ranked
+JOIN tender_platform.companies customer
+  ON customer.id = ranked.customer_company_id;
 
 SELECT *
 FROM tender_platform.v_customer_efficiency_last_six_months

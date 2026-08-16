@@ -75,13 +75,17 @@ DO $test$
 DECLARE
     actual_rank bigint;
     actual_percent numeric;
+    actual_average numeric;
     expected_report_month date := (
         date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Moscow')
         - INTERVAL '1 month'
     )::date;
 BEGIN
-    SELECT customer_rank, savings_percent
-      INTO STRICT actual_rank, actual_percent
+    SELECT
+        customer_rank,
+        savings_percent,
+        average_admitted_bidders
+      INTO STRICT actual_rank, actual_percent, actual_average
       FROM v_customer_efficiency_last_six_months
      WHERE customer_company_id = 1
        AND currency_code = 'CNY'
@@ -92,6 +96,12 @@ BEGIN
             'Zero initial amount must have NULL percent and rank, found percent %, rank %',
             actual_percent,
             actual_rank;
+    END IF;
+
+    IF actual_average IS DISTINCT FROM 0.00 THEN
+        RAISE EXCEPTION
+            'Lot without bids must contribute zero admitted bidders, found %',
+            actual_average;
     END IF;
 END
 $test$;

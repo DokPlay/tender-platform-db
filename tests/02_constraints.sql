@@ -36,6 +36,42 @@ VALUES (
     timestamptz '2026-01-10 12:00:00+03'
 );
 
+INSERT INTO tenders (
+    id,
+    source_system,
+    external_id,
+    procurement_number,
+    title,
+    customer_company_id,
+    status,
+    published_at,
+    submission_deadline_at
+)
+OVERRIDING SYSTEM VALUE
+VALUES
+    (
+        9101,
+        'source-a',
+        'shared-external-id',
+        'TEST-SOURCE-A',
+        'Одинаковый внешний ID в первом источнике',
+        9001,
+        'published',
+        timestamptz '2026-01-01 09:00:00+03',
+        timestamptz '2026-01-05 18:00:00+03'
+    ),
+    (
+        9102,
+        'source-b',
+        'shared-external-id',
+        'TEST-SOURCE-B',
+        'Одинаковый внешний ID во втором источнике',
+        9001,
+        'published',
+        timestamptz '2026-01-01 09:00:00+03',
+        timestamptz '2026-01-05 18:00:00+03'
+    );
+
 INSERT INTO lots (
     id,
     tender_id,
@@ -141,7 +177,50 @@ BEGIN
         VALUES ('Дубликат ИНН', 'TEST-CUSTOMER-9001');
         RAISE EXCEPTION 'uq_companies_tax_id did not reject a duplicate tax_id';
     EXCEPTION
-        WHEN unique_violation THEN NULL;
+        WHEN unique_violation THEN
+            GET STACKED DIAGNOSTICS violated_constraint = CONSTRAINT_NAME;
+            IF violated_constraint IS DISTINCT FROM 'uq_companies_tax_id' THEN
+                RAISE EXCEPTION
+                    'Duplicate tax_id violated unexpected constraint %',
+                    violated_constraint;
+            END IF;
+    END;
+
+    BEGIN
+        INSERT INTO tenders (
+            id,
+            source_system,
+            external_id,
+            procurement_number,
+            title,
+            customer_company_id,
+            status,
+            published_at,
+            submission_deadline_at
+        )
+        OVERRIDING SYSTEM VALUE
+        VALUES (
+            9103,
+            'source-a',
+            'shared-external-id',
+            'TEST-SOURCE-A-DUPLICATE',
+            'Дубликат пары источника и внешнего ID',
+            9001,
+            'published',
+            timestamptz '2026-01-01 09:00:00+03',
+            timestamptz '2026-01-05 18:00:00+03'
+        );
+        RAISE EXCEPTION
+            'uq_tenders_source_external did not reject a duplicate source pair';
+    EXCEPTION
+        WHEN unique_violation THEN
+            GET STACKED DIAGNOSTICS violated_constraint = CONSTRAINT_NAME;
+            IF violated_constraint
+               IS DISTINCT FROM 'uq_tenders_source_external' THEN
+                RAISE EXCEPTION
+                    'Duplicate tender source pair violated unexpected constraint %',
+                    violated_constraint;
+            END IF;
     END;
 
     BEGIN
@@ -167,7 +246,13 @@ BEGIN
         );
         RAISE EXCEPTION 'ck_tenders_status did not reject an invalid status';
     EXCEPTION
-        WHEN check_violation THEN NULL;
+        WHEN check_violation THEN
+            GET STACKED DIAGNOSTICS violated_constraint = CONSTRAINT_NAME;
+            IF violated_constraint IS DISTINCT FROM 'ck_tenders_status' THEN
+                RAISE EXCEPTION
+                    'Invalid tender status violated unexpected constraint %',
+                    violated_constraint;
+            END IF;
     END;
 
     BEGIN
@@ -194,7 +279,13 @@ BEGIN
         RAISE EXCEPTION
             'ck_tenders_completed_state did not require completed_at for a completed tender';
     EXCEPTION
-        WHEN check_violation THEN NULL;
+        WHEN check_violation THEN
+            GET STACKED DIAGNOSTICS violated_constraint = CONSTRAINT_NAME;
+            IF violated_constraint IS DISTINCT FROM 'ck_tenders_completed_state' THEN
+                RAISE EXCEPTION
+                    'Missing completed_at violated unexpected constraint %',
+                    violated_constraint;
+            END IF;
     END;
 
     BEGIN
@@ -223,7 +314,13 @@ BEGIN
         RAISE EXCEPTION
             'ck_tenders_completed_state allowed completion before the submission deadline';
     EXCEPTION
-        WHEN check_violation THEN NULL;
+        WHEN check_violation THEN
+            GET STACKED DIAGNOSTICS violated_constraint = CONSTRAINT_NAME;
+            IF violated_constraint IS DISTINCT FROM 'ck_tenders_completed_state' THEN
+                RAISE EXCEPTION
+                    'Early completion violated unexpected constraint %',
+                    violated_constraint;
+            END IF;
     END;
 
     BEGIN
@@ -249,7 +346,13 @@ BEGIN
         );
         RAISE EXCEPTION 'ck_tenders_submission_window did not reject an invalid deadline';
     EXCEPTION
-        WHEN check_violation THEN NULL;
+        WHEN check_violation THEN
+            GET STACKED DIAGNOSTICS violated_constraint = CONSTRAINT_NAME;
+            IF violated_constraint IS DISTINCT FROM 'ck_tenders_submission_window' THEN
+                RAISE EXCEPTION
+                    'Invalid submission window violated unexpected constraint %',
+                    violated_constraint;
+            END IF;
     END;
 
     BEGIN
@@ -264,7 +367,13 @@ BEGIN
         VALUES (999999, 1, 'Лот без тендера', 100.00, 'RUB', 'open');
         RAISE EXCEPTION 'fk_lots_tender did not reject an orphan lot';
     EXCEPTION
-        WHEN foreign_key_violation THEN NULL;
+        WHEN foreign_key_violation THEN
+            GET STACKED DIAGNOSTICS violated_constraint = CONSTRAINT_NAME;
+            IF violated_constraint IS DISTINCT FROM 'fk_lots_tender' THEN
+                RAISE EXCEPTION
+                    'Orphan lot violated unexpected constraint %',
+                    violated_constraint;
+            END IF;
     END;
 
     BEGIN
@@ -279,7 +388,13 @@ BEGIN
         VALUES (9001, 4, 'Отрицательная цена', -1.00, 'RUB', 'open');
         RAISE EXCEPTION 'ck_lots_initial_price did not reject a negative amount';
     EXCEPTION
-        WHEN check_violation THEN NULL;
+        WHEN check_violation THEN
+            GET STACKED DIAGNOSTICS violated_constraint = CONSTRAINT_NAME;
+            IF violated_constraint IS DISTINCT FROM 'ck_lots_initial_price' THEN
+                RAISE EXCEPTION
+                    'Negative lot price violated unexpected constraint %',
+                    violated_constraint;
+            END IF;
     END;
 
     BEGIN
@@ -315,7 +430,13 @@ BEGIN
         VALUES (9001, 1, 'Дубликат номера лота', 100.00, 'RUB', 'open');
         RAISE EXCEPTION 'uq_lots_tender_number did not reject a duplicate lot number';
     EXCEPTION
-        WHEN unique_violation THEN NULL;
+        WHEN unique_violation THEN
+            GET STACKED DIAGNOSTICS violated_constraint = CONSTRAINT_NAME;
+            IF violated_constraint IS DISTINCT FROM 'uq_lots_tender_number' THEN
+                RAISE EXCEPTION
+                    'Duplicate lot number violated unexpected constraint %',
+                    violated_constraint;
+            END IF;
     END;
 
     BEGIN
@@ -337,7 +458,13 @@ BEGIN
         );
         RAISE EXCEPTION 'ck_bids_amount did not reject a negative amount';
     EXCEPTION
-        WHEN check_violation THEN NULL;
+        WHEN check_violation THEN
+            GET STACKED DIAGNOSTICS violated_constraint = CONSTRAINT_NAME;
+            IF violated_constraint IS DISTINCT FROM 'ck_bids_amount' THEN
+                RAISE EXCEPTION
+                    'Negative bid amount violated unexpected constraint %',
+                    violated_constraint;
+            END IF;
     END;
 
     BEGIN
@@ -383,11 +510,18 @@ BEGIN
             1,
             850.00,
             timestamptz '2026-01-04 14:00:00+03',
-            'admitted'
+            'rejected'
         );
         RAISE EXCEPTION 'uq_bids_lot_bidder_version did not reject a duplicate version';
     EXCEPTION
-        WHEN unique_violation THEN NULL;
+        WHEN unique_violation THEN
+            GET STACKED DIAGNOSTICS violated_constraint = CONSTRAINT_NAME;
+            IF violated_constraint
+               IS DISTINCT FROM 'uq_bids_lot_bidder_version' THEN
+                RAISE EXCEPTION
+                    'Duplicate bid version violated unexpected constraint %',
+                    violated_constraint;
+            END IF;
     END;
 
     BEGIN
@@ -407,7 +541,13 @@ BEGIN
         );
         RAISE EXCEPTION 'uq_executors_lot did not reject a second executor for one lot';
     EXCEPTION
-        WHEN unique_violation THEN NULL;
+        WHEN unique_violation THEN
+            GET STACKED DIAGNOSTICS violated_constraint = CONSTRAINT_NAME;
+            IF violated_constraint IS DISTINCT FROM 'uq_executors_lot' THEN
+                RAISE EXCEPTION
+                    'Second executor violated unexpected constraint %',
+                    violated_constraint;
+            END IF;
     END;
 
     BEGIN
@@ -427,7 +567,14 @@ BEGIN
         );
         RAISE EXCEPTION 'ck_executors_awarded_amount did not reject a negative amount';
     EXCEPTION
-        WHEN check_violation THEN NULL;
+        WHEN check_violation THEN
+            GET STACKED DIAGNOSTICS violated_constraint = CONSTRAINT_NAME;
+            IF violated_constraint
+               IS DISTINCT FROM 'ck_executors_awarded_amount' THEN
+                RAISE EXCEPTION
+                    'Negative awarded amount violated unexpected constraint %',
+                    violated_constraint;
+            END IF;
         WHEN unique_violation THEN
             RAISE EXCEPTION 'Negative award test reached uniqueness before amount validation';
     END;

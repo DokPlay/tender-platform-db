@@ -1,6 +1,6 @@
 \set ON_ERROR_STOP on
 
-BEGIN;
+-- Included by tender_platform.sql inside one transaction.
 
 CREATE SCHEMA tender_platform;
 COMMENT ON SCHEMA tender_platform IS
@@ -198,6 +198,7 @@ CREATE INDEX idx_bids_lot_status_bidder
 
 CREATE INDEX idx_bids_admitted_lot_bidder
     ON bids (lot_id, bidder_company_id)
+    INCLUDE (version_no)
     WHERE status = 'admitted';
 
 CREATE INDEX idx_bids_bidder_company
@@ -210,5 +211,3 @@ CREATE INDEX idx_executors_active_awarded_at_company
     ON executors (awarded_at, company_id)
     INCLUDE (awarded_amount, lot_id)
     WHERE status IN ('awarded', 'contract_signed', 'performing', 'completed');
-
-COMMIT;
