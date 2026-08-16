@@ -101,20 +101,46 @@ DECLARE
     higher_rank bigint;
     lower_displayed_percent numeric;
     higher_displayed_percent numeric;
+    lower_initial_amount numeric;
+    lower_awarded_amount numeric;
+    lower_savings_amount numeric;
+    higher_initial_amount numeric;
+    higher_awarded_amount numeric;
+    higher_savings_amount numeric;
     expected_report_month date := (
         date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Moscow')
         - INTERVAL '1 month'
     )::date;
 BEGIN
-    SELECT customer_rank, savings_percent
-      INTO STRICT lower_rank, lower_displayed_percent
+    SELECT
+        customer_rank,
+        savings_percent,
+        initial_amount,
+        awarded_amount,
+        savings_amount
+      INTO STRICT
+        lower_rank,
+        lower_displayed_percent,
+        lower_initial_amount,
+        lower_awarded_amount,
+        lower_savings_amount
       FROM v_customer_efficiency_last_six_months
      WHERE customer_company_id = 1
        AND currency_code = 'JPY'
        AND report_month = expected_report_month;
 
-    SELECT customer_rank, savings_percent
-      INTO STRICT higher_rank, higher_displayed_percent
+    SELECT
+        customer_rank,
+        savings_percent,
+        initial_amount,
+        awarded_amount,
+        savings_amount
+      INTO STRICT
+        higher_rank,
+        higher_displayed_percent,
+        higher_initial_amount,
+        higher_awarded_amount,
+        higher_savings_amount
       FROM v_customer_efficiency_last_six_months
      WHERE customer_company_id = 2
        AND currency_code = 'JPY'
@@ -133,6 +159,22 @@ BEGIN
             'Expected both displayed percentages to remain rounded to 10.00, found % and %',
             lower_displayed_percent,
             higher_displayed_percent;
+    END IF;
+
+    IF lower_initial_amount IS DISTINCT FROM 10000.00
+       OR lower_awarded_amount IS DISTINCT FROM 8999.70
+       OR lower_savings_amount IS DISTINCT FROM 1000.30
+       OR higher_initial_amount IS DISTINCT FROM 10000.00
+       OR higher_awarded_amount IS DISTINCT FROM 8999.60
+       OR higher_savings_amount IS DISTINCT FROM 1000.40 THEN
+        RAISE EXCEPTION
+            'Cent-level money changed: lower (%, %, %), higher (%, %, %)',
+            lower_initial_amount,
+            lower_awarded_amount,
+            lower_savings_amount,
+            higher_initial_amount,
+            higher_awarded_amount,
+            higher_savings_amount;
     END IF;
 END
 $test$;

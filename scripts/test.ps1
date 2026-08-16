@@ -53,20 +53,177 @@ function Find-PlanNodeByIndex {
     return $null
 }
 
-function Remove-SqlComments {
+function Split-SqlTopLevelStatements {
     param([string]$Sql)
 
-    $withoutBlockComments = [regex]::Replace(
-        $Sql,
-        '(?s)/\*.*?\*/',
-        ''
-    )
+    $statements = [System.Collections.Generic.List[string]]::new()
+    $currentStatement = [System.Text.StringBuilder]::new()
+    $state = 'normal'
+    $blockCommentDepth = 0
+    $dollarQuoteDelimiter = $null
+    $index = 0
 
-    return [regex]::Replace(
-        $withoutBlockComments,
-        '(?m)--[^\r\n]*$',
-        ''
-    )
+    :sqlScan while ($index -lt $Sql.Length) {
+        $character = $Sql[$index]
+        $nextCharacter = if ($index + 1 -lt $Sql.Length) {
+            $Sql[$index + 1]
+        }
+        else {
+            [char]0
+        }
+
+        switch ($state) {
+            'line-comment' {
+                if ($character -eq "`r" -or $character -eq "`n") {
+                    [void]$currentStatement.Append($character)
+                    $state = 'normal'
+                }
+
+                $index++
+                continue sqlScan
+            }
+            'block-comment' {
+                if ($character -eq '/' -and $nextCharacter -eq '*') {
+                    $blockCommentDepth++
+                    $index += 2
+                    continue sqlScan
+                }
+
+                if ($character -eq '*' -and $nextCharacter -eq '/') {
+                    $blockCommentDepth--
+                    $index += 2
+
+                    if ($blockCommentDepth -eq 0) {
+                        [void]$currentStatement.Append(' ')
+                        $state = 'normal'
+                    }
+
+                    continue sqlScan
+                }
+
+                if ($character -eq "`r" -or $character -eq "`n") {
+                    [void]$currentStatement.Append($character)
+                }
+
+                $index++
+                continue sqlScan
+            }
+            'single-quote' {
+                [void]$currentStatement.Append($character)
+
+                if ($character -eq "'") {
+                    if ($nextCharacter -eq "'") {
+                        [void]$currentStatement.Append($nextCharacter)
+                        $index += 2
+                        continue sqlScan
+                    }
+
+                    $state = 'normal'
+                }
+
+                $index++
+                continue sqlScan
+            }
+            'double-quote' {
+                [void]$currentStatement.Append($character)
+
+                if ($character -eq '"') {
+                    if ($nextCharacter -eq '"') {
+                        [void]$currentStatement.Append($nextCharacter)
+                        $index += 2
+                        continue sqlScan
+                    }
+
+                    $state = 'normal'
+                }
+
+                $index++
+                continue sqlScan
+            }
+            'dollar-quote' {
+                if ($index + $dollarQuoteDelimiter.Length -le $Sql.Length -and
+                    $Sql.Substring(
+                        $index,
+                        $dollarQuoteDelimiter.Length
+                    ) -ceq $dollarQuoteDelimiter) {
+                    [void]$currentStatement.Append($dollarQuoteDelimiter)
+                    $index += $dollarQuoteDelimiter.Length
+                    $state = 'normal'
+                    continue sqlScan
+                }
+
+                [void]$currentStatement.Append($character)
+                $index++
+                continue sqlScan
+            }
+        }
+
+        if ($character -eq '-' -and $nextCharacter -eq '-') {
+            $state = 'line-comment'
+            $index += 2
+            continue
+        }
+
+        if ($character -eq '/' -and $nextCharacter -eq '*') {
+            $state = 'block-comment'
+            $blockCommentDepth = 1
+            $index += 2
+            continue
+        }
+
+        if ($character -eq "'") {
+            [void]$currentStatement.Append($character)
+            $state = 'single-quote'
+            $index++
+            continue
+        }
+
+        if ($character -eq '"') {
+            [void]$currentStatement.Append($character)
+            $state = 'double-quote'
+            $index++
+            continue
+        }
+
+        if ($character -eq '$') {
+            $delimiterMatch = [regex]::Match(
+                $Sql.Substring($index),
+                '^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$'
+            )
+
+            if ($delimiterMatch.Success) {
+                $dollarQuoteDelimiter = $delimiterMatch.Value
+                [void]$currentStatement.Append($dollarQuoteDelimiter)
+                $index += $dollarQuoteDelimiter.Length
+                $state = 'dollar-quote'
+                continue
+            }
+        }
+
+        [void]$currentStatement.Append($character)
+        $index++
+
+        if ($character -eq ';') {
+            $statement = $currentStatement.ToString().Trim()
+
+            if ($statement.Length -gt 0) {
+                $statements.Add($statement)
+            }
+
+            [void]$currentStatement.Clear()
+        }
+    }
+
+    if ($state -notin ('normal', 'line-comment')) {
+        throw "Unterminated SQL construct while reading canonical report: $state"
+    }
+
+    $trailingStatement = $currentStatement.ToString().Trim()
+    if ($trailingStatement.Length -gt 0) {
+        $statements.Add($trailingStatement)
+    }
+
+    return $statements.ToArray()
 }
 
 function Assert-CanonicalQueryOutputOrder {
@@ -75,15 +232,42 @@ function Assert-CanonicalQueryOutputOrder {
     $efficiencySql = Get-Content -Raw -LiteralPath (
         Join-Path $projectRoot 'sql\analytics\02_customer_efficiency.sql'
     )
-    $executableEfficiencySql = Remove-SqlComments -Sql $efficiencySql
+    $statements = @(Split-SqlTopLevelStatements -Sql $efficiencySql)
+    if ($statements.Count -eq 0) {
+        throw 'Canonical customer-efficiency SQL contains no executable statement'
+    }
+
+    $finalStatement = $statements[-1]
     $canonicalFinalSelect = (
-        '(?is)SELECT\s+\*\s+FROM\s+' +
+        '(?is)\ASELECT\s+\*\s+FROM\s+' +
         'tender_platform\.v_customer_efficiency_last_six_months\s+' +
         'ORDER BY\s+report_month DESC,\s*currency_code,\s*' +
         'customer_rank NULLS LAST,\s*customer_company_id;\s*\z'
     )
 
-    if ($executableEfficiencySql -notmatch $canonicalFinalSelect) {
+    $canonicalQueryLine = (
+        'SELECT * FROM tender_platform.' +
+        'v_customer_efficiency_last_six_months ORDER BY ' +
+        'report_month DESC, currency_code, customer_rank NULLS LAST, ' +
+        'customer_company_id;'
+    )
+    $deadTextFixtures = @(
+        "SELECT '$canonicalQueryLine--';",
+        "\echo $canonicalQueryLine"
+    )
+
+    foreach ($deadTextFixture in $deadTextFixtures) {
+        $fixtureStatements = @(
+            Split-SqlTopLevelStatements -Sql $deadTextFixture
+        )
+
+        if ($fixtureStatements.Count -gt 0 -and
+            $fixtureStatements[-1] -match $canonicalFinalSelect) {
+            throw 'Canonical output-order parser accepted non-executable SQL text'
+        }
+    }
+
+    if ($finalStatement -notmatch $canonicalFinalSelect) {
         throw 'Canonical customer-efficiency output is not totally ordered by customer ID'
     }
 
@@ -257,7 +441,9 @@ function Invoke-LifecycleRaceContract {
         [string]$RaceName,
         [string]$SessionAMarker,
         [string]$SessionASql,
+        [string]$SessionBMarker,
         [string]$SessionBSql,
+        [string]$ReleaseSql,
         [string]$ExpectedFailurePattern,
         [string]$UnexpectedSuccessMessage,
         [string]$FinalStateSql
@@ -281,6 +467,9 @@ function Invoke-LifecycleRaceContract {
         $concurrencyDatabaseName, `
         $databaseUser, `
         $SessionASql
+
+    $sessionB = $null
+    $gateReleased = $false
 
     try {
         $sessionAIsSleeping = $false
@@ -312,12 +501,65 @@ function Invoke-LifecycleRaceContract {
             throw "$RaceName session A did not reach the controlled lock window"
         }
 
-        $sessionBOutput = docker exec $containerName psql `
+        $sessionB = Start-Job -ScriptBlock {
+            param($TargetContainer, $TargetDatabase, $TargetUser, $Sql)
+
+            $nativeOutput = docker exec $TargetContainer psql `
+                -U $TargetUser `
+                -d $TargetDatabase `
+                -v ON_ERROR_STOP=1 `
+                -c $Sql 2>&1
+
+            [pscustomobject]@{
+                ExitCode = $LASTEXITCODE
+                Output = ($nativeOutput | Out-String)
+            }
+        } -ArgumentList `
+            $containerName, `
+            $concurrencyDatabaseName, `
+            $databaseUser, `
+            $SessionBSql
+
+        $sessionBIsBlocked = $false
+
+        for ($attempt = 1; $attempt -le 50; $attempt++) {
+            $lockProbe = docker exec $containerName psql `
+                -U $databaseUser `
+                -d $concurrencyDatabaseName `
+                -At `
+                -v ON_ERROR_STOP=1 `
+                -c "SELECT EXISTS (
+                        SELECT 1
+                        FROM pg_stat_activity
+                        WHERE datname = '$concurrencyDatabaseName'
+                          AND query LIKE '%$SessionBMarker%'
+                          AND wait_event_type = 'Lock'
+                    );"
+            Assert-NativeSuccess "$RaceName session B lock-wait probe"
+
+            if (($lockProbe | Out-String).Trim() -eq 't') {
+                $sessionBIsBlocked = $true
+                break
+            }
+
+            if ($sessionB.State -in ('Completed', 'Failed', 'Stopped')) {
+                break
+            }
+
+            Start-Sleep -Milliseconds 100
+        }
+
+        if (-not $sessionBIsBlocked) {
+            throw "$RaceName session B did not wait on the parent row lock"
+        }
+
+        docker exec $containerName psql `
             -U $databaseUser `
             -d $concurrencyDatabaseName `
             -v ON_ERROR_STOP=1 `
-            -c $SessionBSql 2>&1
-        $sessionBExitCode = $LASTEXITCODE
+            -c $ReleaseSql | Out-Null
+        Assert-NativeSuccess "$RaceName gate release"
+        $gateReleased = $true
 
         Wait-Job -Job $sessionA -Timeout 10 | Out-Null
         if ($sessionA.State -ne 'Completed') {
@@ -330,12 +572,19 @@ function Invoke-LifecycleRaceContract {
             throw "$RaceName session A failed"
         }
 
-        if ($sessionBExitCode -eq 0) {
+        Wait-Job -Job $sessionB -Timeout 10 | Out-Null
+        if ($sessionB.State -ne 'Completed') {
+            throw "$RaceName session B did not complete"
+        }
+
+        $sessionBResult = Receive-Job -Job $sessionB
+
+        if ($sessionBResult.ExitCode -eq 0) {
             throw $UnexpectedSuccessMessage
         }
 
-        if (($sessionBOutput | Out-String) -notmatch $ExpectedFailurePattern) {
-            $sessionBOutput | Write-Output
+        if ($sessionBResult.Output -notmatch $ExpectedFailurePattern) {
+            $sessionBResult.Output | Write-Output
             throw "$RaceName session B failed for an unexpected reason"
         }
 
@@ -352,11 +601,27 @@ function Invoke-LifecycleRaceContract {
         }
     }
     finally {
-        if ($sessionA.State -notin ('Completed', 'Failed', 'Stopped')) {
-            Stop-Job -Job $sessionA | Out-Null
+        if (-not $gateReleased) {
+            docker exec $containerName psql `
+                -U $databaseUser `
+                -d $concurrencyDatabaseName `
+                -v ON_ERROR_STOP=1 `
+                -c $ReleaseSql 2>$null | Out-Null
         }
 
-        Remove-Job -Job $sessionA -Force | Out-Null
+        foreach ($sessionJob in @($sessionA, $sessionB)) {
+            if ($null -eq $sessionJob) {
+                continue
+            }
+
+            Wait-Job -Job $sessionJob -Timeout 5 | Out-Null
+
+            if ($sessionJob.State -notin ('Completed', 'Failed', 'Stopped')) {
+                Stop-Job -Job $sessionJob | Out-Null
+            }
+
+            Remove-Job -Job $sessionJob -Force | Out-Null
+        }
     }
 
     Write-Output "PASS: $RaceName preserved lifecycle integrity."
@@ -402,6 +667,12 @@ INSERT INTO lots (
 )
 OVERRIDING SYSTEM VALUE
 VALUES (910001, 910001, 1, 'Concurrency lot', 100.00, 'RUB', 'completed');
+CREATE TABLE lifecycle_concurrency_gate (
+    race_name text PRIMARY KEY,
+    released boolean NOT NULL DEFAULT false
+);
+INSERT INTO lifecycle_concurrency_gate (race_name)
+VALUES ('award'), ('bid');
 '@
 
     docker exec $containerName psql `
@@ -418,11 +689,23 @@ SET LOCAL search_path = tender_platform, public;
 UPDATE tenders
    SET submission_deadline_at = timestamptz '2026-01-22 18:00:00+03'
  WHERE id = 910001;
-SELECT pg_sleep(3);
+DO $gate$
+BEGIN
+    LOOP
+        EXIT WHEN (
+            SELECT gate.released
+            FROM tender_platform.lifecycle_concurrency_gate gate
+            WHERE gate.race_name = 'award'
+        );
+        PERFORM pg_sleep(0.05);
+    END LOOP;
+END
+$gate$;
 COMMIT;
 '@
 
     $awardSessionBSql = @'
+/* lifecycle-concurrency-award-session-b */
 SET statement_timeout = '10s';
 SET search_path = tender_platform, public;
 INSERT INTO executors (
@@ -433,6 +716,12 @@ VALUES (
     910001, 910001, 910002, 90.00,
     timestamptz '2026-01-21 12:00:00+03', 'completed'
 );
+'@
+
+    $awardReleaseSql = @'
+UPDATE tender_platform.lifecycle_concurrency_gate
+   SET released = true
+ WHERE race_name = 'award';
 '@
 
     $awardFinalStateSql = @'
@@ -450,7 +739,9 @@ WHERE id = 910001;
         -RaceName 'Concurrent deadline and award changes' `
         -SessionAMarker 'lifecycle-concurrency-award-session-a' `
         -SessionASql $awardSessionASql `
+        -SessionBMarker 'lifecycle-concurrency-award-session-b' `
         -SessionBSql $awardSessionBSql `
+        -ReleaseSql $awardReleaseSql `
         -ExpectedFailurePattern 'cannot precede the tender submission deadline' `
         -UnexpectedSuccessMessage 'Concurrent award incorrectly committed against the new deadline' `
         -FinalStateSql $awardFinalStateSql
@@ -462,11 +753,23 @@ SET LOCAL search_path = tender_platform, public;
 UPDATE tenders
    SET published_at = timestamptz '2026-01-12 09:00:00+03'
  WHERE id = 910001;
-SELECT pg_sleep(3);
+DO $gate$
+BEGIN
+    LOOP
+        EXIT WHEN (
+            SELECT gate.released
+            FROM tender_platform.lifecycle_concurrency_gate gate
+            WHERE gate.race_name = 'bid'
+        );
+        PERFORM pg_sleep(0.05);
+    END LOOP;
+END
+$gate$;
 COMMIT;
 '@
 
     $bidSessionBSql = @'
+/* lifecycle-concurrency-bid-session-b */
 SET statement_timeout = '10s';
 SET search_path = tender_platform, public;
 INSERT INTO bids (
@@ -478,6 +781,12 @@ VALUES (
     910001, 910001, 910002, 1,
     95.00, timestamptz '2026-01-11 12:00:00+03', 'admitted'
 );
+'@
+
+    $bidReleaseSql = @'
+UPDATE tender_platform.lifecycle_concurrency_gate
+   SET released = true
+ WHERE race_name = 'bid';
 '@
 
     $bidFinalStateSql = @'
@@ -495,7 +804,9 @@ WHERE id = 910001;
         -RaceName 'Concurrent publication and bid changes' `
         -SessionAMarker 'lifecycle-concurrency-bid-session-a' `
         -SessionASql $bidSessionASql `
+        -SessionBMarker 'lifecycle-concurrency-bid-session-b' `
         -SessionBSql $bidSessionBSql `
+        -ReleaseSql $bidReleaseSql `
         -ExpectedFailurePattern 'timestamp must be within tender publication and submission deadline' `
         -UnexpectedSuccessMessage 'Concurrent bid incorrectly committed against the new publication date' `
         -FinalStateSql $bidFinalStateSql
