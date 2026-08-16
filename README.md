@@ -1,18 +1,20 @@
+[Русская версия](README.ru.md)
+
 # Tender Platform DB
 
-Проектирование и проверяемая реализация схемы PostgreSQL для мониторинга государственных закупок.
+A verifiable PostgreSQL schema design and implementation for monitoring public procurement.
 
-## Результат
+## Overview
 
-Проект содержит пять требуемых бизнес-таблиц:
+The project contains the five required business tables:
 
-- `companies` — единый справочник заказчиков, участников и победителей;
-- `tenders` — закупки с компанией-заказчиком;
-- `lots` — лоты закупок;
-- `bids` — версионные ценовые предложения участников;
-- `executors` — результаты присуждения лотов компаниям.
+- `companies` — a shared directory of customers, bidders, and winners;
+- `tenders` — procurement notices associated with a customer company;
+- `lots` — individual tender lots;
+- `bids` — versioned price proposals submitted by bidders;
+- `executors` — lot award results assigned to winning companies.
 
-`executors` является источником истины для победителя и присуждённой суммы. Реквизиты организации не дублируются в отдельном справочнике исполнителей.
+`executors` is the source of truth for both the winner and the awarded amount. Company details are not duplicated in a separate contractor directory.
 
 ```mermaid
 erDiagram
@@ -24,7 +26,7 @@ erDiagram
     LOTS ||--o| EXECUTORS : awarded_to
 ```
 
-## Структура
+## Project structure
 
 ```text
 sql/
@@ -56,47 +58,47 @@ tests/
   15_top_exact_money_contract.sql
 ```
 
-## Требования
+## Requirements
 
-- PostgreSQL 16 или новее;
-- для автоматической проверки: Docker и PowerShell 7.
+- PostgreSQL 16 or newer;
+- Docker and PowerShell 7 for automated verification.
 
-Скрипты используют стандартные возможности PostgreSQL 16 и не требуют дополнительных расширений.
-Полный набор автоматических проверок выполнен на PostgreSQL 16 и PostgreSQL 18.
+The scripts use only standard PostgreSQL 16 features and require no extensions.
+The complete automated test suite has been run on PostgreSQL 16 and PostgreSQL 18.
 
-## Быстрая проверка через Docker
+## Quick verification with Docker
 
-Из корня проекта:
+Run from the project root:
 
 ```powershell
 .\scripts\test.ps1
 ```
 
-Скрипт:
+The script:
 
-1. запускает временный контейнер `postgres:16-alpine`;
-2. разворачивает схему в чистой базе;
-3. проверяет все обязательные колонки, типы, значения по умолчанию, `NOT NULL`, `GENERATED ALWAYS`, PK, бизнес-ограничения, ровно шесть FK, рабочие индексы и lifecycle-триггеры;
-4. доказывает отклонение некорректных данных, включая отрицательные суммы и `NaN`;
-5. загружает воспроизводимые примеры;
-6. запускает и проверяет оба сдаваемых аналитических запроса;
-7. проверяет отменённые и прекращённые результаты, независимые статусы тендера и лота, имена компаний, точные суммы с копейками, нулевые присуждения, равные рейтинги, `NULLS LAST`, последнюю версию ставки, источник отчётного месяца, округление среднего, валюты и границы периодов;
-8. проверяет весь набор Unicode White_Space, конечность временных значений, бизнес-значения по умолчанию, итоговое состояние отложенных lifecycle-ограничений и межтабличные сроки ставок и присуждений;
-9. в двух параллельных сессиях воспроизводит конкурентное изменение дедлайна и присуждение, подтверждая сохранение целостности;
-10. на 60 000 лотов и 240 000 ставок анализирует JSON-планы: диапазон по `awarded_at` должен оставаться условием индекса, а допущенные ставки читаться покрывающим `Index Only Scan` без обращений к heap;
-11. доказывает, что внутренний компонент схемы нельзя запустить напрямую и оставить таблицы в `public`;
-12. намеренно ломает второй этап установки и доказывает полный откат, а также безопасный отказ повторной clean-only установки без потери существующих данных;
-13. удаляет только созданный им контейнер.
+1. starts a temporary `postgres:16-alpine` container;
+2. deploys the schema into a clean database;
+3. verifies all required columns, data types, defaults, `NOT NULL` constraints, `GENERATED ALWAYS` identities, primary keys, business constraints, exactly six foreign keys, workload indexes, and lifecycle triggers;
+4. proves that invalid data is rejected, including negative monetary values and `NaN`;
+5. loads reproducible sample data;
+6. runs and verifies both deliverable analytical queries;
+7. checks cancelled and terminated results, independent tender and lot statuses, company names, exact cent-level amounts, zero-value awards, tied rankings, `NULLS LAST`, the latest bid version, the report-month source, average rounding, currencies, and period boundaries;
+8. checks the complete Unicode White_Space set, finite timestamps, business defaults, final-state semantics of deferred lifecycle constraints, and cross-table bid and award timing rules;
+9. reproduces a concurrent deadline update and award in two parallel sessions and verifies that integrity is preserved;
+10. analyzes JSON plans for 60,000 lots and 240,000 bids: the `awarded_at` range must remain an index condition, and admitted bids must use a covering `Index Only Scan` with no heap fetches;
+11. proves that the internal schema component cannot be run directly and leave tables in `public`;
+12. deliberately breaks the second installation stage to prove a complete rollback, and verifies that a repeated clean-only installation fails safely without losing existing data;
+13. removes only the container it created.
 
-## Ручной запуск через psql
+## Manual installation with psql
 
-В заранее созданной пустой базе:
+Run against an existing empty database:
 
 ```powershell
 psql -v ON_ERROR_STOP=1 -f sql/tender_platform.sql
 ```
 
-Единый входной скрипт в одной транзакции создаёт схему, таблицы, ограничения, индексы и два аналитических представления. Ошибка любого этапа откатывает установку целиком. Демонстрационные данные намеренно не входят в производственное развёртывание. Для просмотра проверочного результата после установки:
+The single entry-point script creates the schema, tables, constraints, indexes, and two analytical views in one transaction. An error at any stage rolls back the entire installation. Sample data is intentionally excluded from production deployment. To inspect a verified result after installation, run:
 
 ```powershell
 psql -v ON_ERROR_STOP=1 -f sql/02_sample_data.sql
@@ -104,78 +106,78 @@ psql -v ON_ERROR_STOP=1 -f sql/analytics/01_top_companies_previous_month.sql
 psql -v ON_ERROR_STOP=1 -f sql/analytics/02_customer_efficiency.sql
 ```
 
-`tender_platform.sql` намеренно предназначен для чистой базы: повторный запуск без удаления схемы завершится ошибкой, защищая существующие данные от неявной перезаписи.
-`01_schema.sql` является внутренним компонентом и защищён от прямого запуска: использовать нужно только единый входной скрипт выше.
+`tender_platform.sql` intentionally targets a clean database: running it again without removing the schema fails, protecting existing data from implicit replacement.
+`01_schema.sql` is an internal component protected against direct execution; use only the entry-point script shown above.
 
-## Целостность данных
+## Data integrity
 
-Схема включает:
+The schema provides:
 
-- `bigint GENERATED ALWAYS AS IDENTITY` и PK у каждой таблицы;
-- шесть внешних ключей с `ON DELETE RESTRICT`;
-- уникальность ИНН, пары «источник + внешний ID» тендера, номера лота внутри тендера и версии ставки участника;
-- один результат присуждения на лот в версии 1;
-- обязательную дату завершения завершённого тендера не раньше окончания приёма заявок;
-- проверки непустых идентификаторов и названий, а также запрет ведущих и замыкающих Unicode-пробелов;
-- неотрицательные денежные суммы `numeric(20,2)` с явным запретом `NaN`;
-- контролируемые статусы через именованные `CHECK`;
-- конечные временные значения `timestamptz` без `infinity` и `-infinity`;
-- отложенные constraint-триггеры проверяют итоговое состояние строки: ставка должна находиться между публикацией и дедлайном, а присуждение — не раньше дедлайна; обратные изменения дат тендера и принадлежности лота перепроверяют существующие дочерние записи;
-- индексы для FK-соединений, активных тендеров, ставок и отчётов по присуждениям;
-- компактный покрывающий частичный индекс только по допущенным ставкам для аналитики конкуренции.
+- `bigint GENERATED ALWAYS AS IDENTITY` and a primary key for every table;
+- six foreign keys with `ON DELETE RESTRICT`;
+- uniqueness for tax IDs, each tender's source/external-ID pair, lot numbers within a tender, and bidder bid versions;
+- one award result per lot in version 1;
+- a mandatory completion timestamp for completed tenders that cannot precede the submission deadline;
+- non-empty identifier and name checks, plus rejection of leading and trailing Unicode whitespace;
+- non-negative `numeric(20,2)` monetary values with an explicit `NaN` prohibition;
+- controlled statuses enforced by named `CHECK` constraints;
+- finite `timestamptz` values with no `infinity` or `-infinity`;
+- deferred constraint triggers that validate the final row state: a bid must fall between publication and submission deadline, while an award cannot precede the deadline; reverse updates to tender dates and lot ownership revalidate existing child rows;
+- indexes for foreign-key joins, active tenders, bids, and award reports;
+- a compact covering partial index limited to admitted bids for competition analytics.
 
-Исторические закупочные данные не удаляются каскадно. Если запись уже связана с тендером, лотом, ставкой или результатом, удаление родительской записи должно быть явным и контролируемым.
+Historical procurement data is not deleted through cascading operations. If a record is already referenced by a tender, lot, bid, or award result, deleting its parent must be explicit and controlled.
 
-## Аналитический запрос 1
+## Analytical query 1
 
-[`01_top_companies_previous_month.sql`](sql/analytics/01_top_companies_previous_month.sql) выводит три компании с максимальной суммой присуждённых лотов за предыдущий полностью завершённый календарный месяц.
+[`01_top_companies_previous_month.sql`](sql/analytics/01_top_companies_previous_month.sql) returns the three companies with the highest total awarded lot value for the previous fully completed calendar month.
 
-Правила:
+Rules:
 
-- границы месяца рассчитываются в часовом поясе `Europe/Moscow`;
-- используется полуоткрытый интервал `[начало прошлого месяца; начало текущего месяца)`;
-- прекращённые результаты, отменённые тендеры и отменённые лоты не учитываются;
-- сумма берётся из `executors.awarded_amount`, а не из начальной цены;
-- лоты и уникальные тендеры считаются отдельно;
-- разные валюты не складываются — топ формируется отдельно для каждой валюты;
-- `row_number()` и ID компании обеспечивают до трёх детерминированных строк на валюту.
+- month boundaries are calculated in the `Europe/Moscow` time zone;
+- a half-open interval `[start of previous month, start of current month)` is used;
+- terminated results, cancelled tenders, and cancelled lots are excluded;
+- totals use `executors.awarded_amount`, not the initial price;
+- lots and distinct tenders are counted separately;
+- amounts in different currencies are never combined, so each currency has its own top list;
+- `row_number()` and the company ID produce up to three deterministic rows per currency.
 
-Запрос создаёт представление `tender_platform.v_top_companies_previous_month` и выводит его содержимое.
-Имя компании присоединяется после агрегации и ограничения топ-3, поэтому текстовое поле не участвует в промежуточной группировке.
+The query creates `tender_platform.v_top_companies_previous_month` and outputs its contents.
+The company name is joined after aggregation and the top-three restriction, keeping the text field out of intermediate grouping.
 
-## Аналитический запрос 2
+## Analytical query 2
 
-[`02_customer_efficiency.sql`](sql/analytics/02_customer_efficiency.sql) рассчитывает эффективность заказчиков за последние шесть полностью завершённых месяцев:
+[`02_customer_efficiency.sql`](sql/analytics/02_customer_efficiency.sql) calculates customer efficiency for the last six fully completed months:
 
-- количество завершённых лотов;
-- среднее число допущенных участников на лот;
-- начальную и присуждённую суммы;
-- абсолютную и процентную экономию;
-- место заказчика внутри месяца и валюты.
+- number of completed lots;
+- average number of admitted bidders per lot;
+- initial and awarded amounts;
+- absolute and percentage savings;
+- customer rank within each month and currency.
 
-Сначала материализуется только набор завершённых лотов отчётного шестимесячного периода. Для каждого участника учитывается статус его версии с максимальным `version_no`: участник считается допущенным, только если эта последняя версия имеет статус `admitted`. Кандидаты и их `version_no` читаются из покрывающего частичного индекса, а наличие более новой версии проверяется уникальным индексом `(lot_id, bidder_company_id, version_no)`. Агрегация выполняется на уровне лота, поэтому версии одной заявки не считаются разными участниками и соединение со ставками не размножает денежные суммы.
+Only the completed lots in the six-month reporting window are materialized first. For each bidder, the status of the version with the highest `version_no` is used: the bidder is admitted only when that latest version has the `admitted` status. Candidates and their `version_no` values are read from the covering partial index, while the unique `(lot_id, bidder_company_id, version_no)` index is used to check for a newer version. Aggregation takes place at the lot level, so versions of the same bid are not counted as separate bidders and joining bids does not multiply monetary totals.
 
-Имя заказчика присоединяется после расчёта сумм и рейтинга: широкое текстовое поле не переносится через материализованный набор лотов и не участвует в промежуточной группировке.
+The customer name is joined after totals and ranks have been calculated, keeping the wide text field out of the materialized lot set and intermediate grouping.
 
-Место заказчика рассчитывается по точному проценту экономии. Округление до двух знаков выполняется только для отображения, поэтому близкие значения не меняют правильный порядок рейтинга.
+Customer rank is calculated from the exact savings percentage. Rounding to two decimal places is applied only for display, so close values do not change their correct ranking order.
 
-Итоговый вывод полностью детерминирован: `NULL`-рейтинги идут последними, а равенства разрешаются по ID заказчика.
+The final output is fully deterministic: `NULL` ranks appear last, and ties are resolved by customer ID.
 
-Если суммарная начальная цена группы равна нулю, процент экономии математически не определён: `savings_percent` и `customer_rank` возвращаются как `NULL`, а денежные показатели сохраняются.
+When a group's total initial amount is zero, its savings percentage is mathematically undefined: `savings_percent` and `customer_rank` are returned as `NULL`, while the monetary values are preserved.
 
-Запрос создаёт представление `tender_platform.v_customer_efficiency_last_six_months` и выводит его содержимое.
+The query creates `tender_platform.v_customer_efficiency_last_six_months` and outputs its contents.
 
-## Принятые допущения версии 1
+## Version 1 assumptions
 
-- у тендера один заказчик;
-- наличие минимум одного лота у тендера обеспечивает загрузчик или приложение; одними FK это правило не выражается;
-- у лота не более одного действующего исполнителя;
-- одна компания может подавать несколько версий ставки;
-- победа определяется датой присуждения лота;
-- выигранная сумма — присуждённая сумма, а не фактические платежи;
-- отчётный часовой пояс — `Europe/Moscow`;
-- суммы разных валют анализируются раздельно.
+- each tender has one customer;
+- the loader or application ensures that every tender has at least one lot, because foreign keys alone cannot express this rule;
+- each lot has at most one active executor;
+- a company may submit multiple versions of a bid;
+- a win is determined by the lot award timestamp;
+- the won amount is the awarded amount, not actual payments;
+- the reporting time zone is `Europe/Moscow`;
+- amounts in different currencies are analyzed separately.
 
-## Лицензия
+## License
 
 [MIT](LICENSE), © 2026 DokPlay.
