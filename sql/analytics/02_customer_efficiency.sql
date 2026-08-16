@@ -2,8 +2,9 @@
 
 /*
 Query 2. Customer procurement efficiency for the last six fully closed
-calendar months. Bidders and award facts are aggregated at lot grain before
-customer totals are calculated, preventing multiplication of monetary values.
+calendar months. Eligible report lots are materialized before admitted bids are
+read. Monetary values are aggregated at lot grain, and ranking uses the exact
+savings ratio before that ratio is rounded for display.
 */
 CREATE OR REPLACE VIEW tender_platform.v_customer_efficiency_last_six_months AS
 WITH report_bounds AS (
@@ -16,15 +17,7 @@ WITH report_bounds AS (
             date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Moscow')
         ) AT TIME ZONE 'Europe/Moscow' AS period_end
 ),
-admitted_bidders_by_lot AS (
-    SELECT
-        bid.lot_id,
-        count(DISTINCT bid.bidder_company_id) AS admitted_bidder_count
-    FROM tender_platform.bids bid
-    WHERE bid.status = 'admitted'
-    GROUP BY bid.lot_id
-),
-lot_metrics AS (
+eligible_lots AS MATERIALIZED (
     SELECT
         date_trunc(
             'month',
@@ -35,8 +28,7 @@ lot_metrics AS (
         lot.currency_code,
         lot.id AS lot_id,
         lot.initial_price,
-        executor.awarded_amount,
-        coalesce(bidders.admitted_bidder_count, 0) AS admitted_bidder_count
+        executor.awarded_amount
     FROM tender_platform.executors executor
     JOIN tender_platform.lots lot
       ON lot.id = executor.lot_id
@@ -44,14 +36,36 @@ lot_metrics AS (
       ON tender.id = lot.tender_id
     JOIN tender_platform.companies customer
       ON customer.id = tender.customer_company_id
-    LEFT JOIN admitted_bidders_by_lot bidders
-      ON bidders.lot_id = lot.id
     CROSS JOIN report_bounds bounds
     WHERE executor.status IN ('awarded', 'contract_signed', 'performing', 'completed')
       AND tender.status = 'completed'
       AND lot.status = 'completed'
       AND executor.awarded_at >= bounds.period_start
       AND executor.awarded_at < bounds.period_end
+),
+admitted_bidders_by_lot AS (
+    SELECT
+        eligible.lot_id,
+        count(DISTINCT bid.bidder_company_id) AS admitted_bidder_count
+    FROM eligible_lots eligible
+    JOIN tender_platform.bids bid
+      ON bid.lot_id = eligible.lot_id
+     AND bid.status = 'admitted'
+    GROUP BY eligible.lot_id
+),
+lot_metrics AS (
+    SELECT
+        eligible.report_month,
+        eligible.customer_company_id,
+        eligible.customer_name,
+        eligible.currency_code,
+        eligible.lot_id,
+        eligible.initial_price,
+        eligible.awarded_amount,
+        coalesce(bidders.admitted_bidder_count, 0) AS admitted_bidder_count
+    FROM eligible_lots eligible
+    LEFT JOIN admitted_bidders_by_lot bidders
+      ON bidders.lot_id = eligible.lot_id
 ),
 customer_totals AS (
     SELECT
@@ -64,11 +78,10 @@ customer_totals AS (
         sum(initial_price) AS initial_amount,
         sum(awarded_amount) AS awarded_amount,
         sum(initial_price) - sum(awarded_amount) AS savings_amount,
-        round(
+        (
             100 * (sum(initial_price) - sum(awarded_amount))
-            / NULLIF(sum(initial_price), 0),
-            2
-        ) AS savings_percent
+            / NULLIF(sum(initial_price), 0)
+        ) AS savings_percent_exact
     FROM lot_metrics
     GROUP BY
         report_month,
@@ -80,7 +93,7 @@ ranked_customers AS (
     SELECT
         row_number() OVER (
             PARTITION BY report_month, currency_code
-            ORDER BY savings_percent DESC NULLS LAST, customer_company_id
+            ORDER BY savings_percent_exact DESC NULLS LAST, customer_company_id
         ) AS customer_rank,
         report_month,
         customer_company_id,
@@ -91,7 +104,7 @@ ranked_customers AS (
         initial_amount,
         awarded_amount,
         savings_amount,
-        savings_percent
+        savings_percent_exact
     FROM customer_totals
 )
 SELECT
@@ -105,7 +118,7 @@ SELECT
     initial_amount,
     awarded_amount,
     savings_amount,
-    savings_percent
+    round(savings_percent_exact, 2) AS savings_percent
 FROM ranked_customers;
 
 SELECT *

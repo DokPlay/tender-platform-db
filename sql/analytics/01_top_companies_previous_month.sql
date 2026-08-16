@@ -4,8 +4,9 @@
 Query 1. Top three awarded suppliers for the previous fully closed
 calendar month. Month boundaries are calculated in Europe/Moscow.
 
-Awards are compared only inside one currency. row_number() deliberately
-returns exactly three rows per currency and resolves equal totals by company ID.
+Awards are compared only inside one currency. Cancelled tenders and lots are
+excluded even if an imported award still has an active status. row_number()
+returns up to three rows per currency and resolves equal totals by company ID.
 */
 CREATE OR REPLACE VIEW tender_platform.v_top_companies_previous_month AS
 WITH report_bounds AS (
@@ -33,8 +34,12 @@ company_totals AS (
       ON company.id = executor.company_id
     JOIN tender_platform.lots lot
       ON lot.id = executor.lot_id
+    JOIN tender_platform.tenders tender
+      ON tender.id = lot.tender_id
     CROSS JOIN report_bounds bounds
     WHERE executor.status IN ('awarded', 'contract_signed', 'performing', 'completed')
+      AND tender.status <> 'cancelled'
+      AND lot.status <> 'cancelled'
       AND executor.awarded_at >= bounds.period_start
       AND executor.awarded_at < bounds.period_end
     GROUP BY

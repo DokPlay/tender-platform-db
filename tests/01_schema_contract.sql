@@ -5,6 +5,8 @@ DECLARE
     missing_tables text[];
     missing_constraints text[];
     missing_indexes text[];
+    invalid_foreign_keys text[];
+    unindexed_foreign_keys text[];
     primary_key_count integer;
     foreign_key_count integer;
     identity_key_count integer;
@@ -80,7 +82,8 @@ BEGIN
               ('uq_tenders_source_external'),
               ('uq_lots_tender_number'),
               ('uq_bids_lot_bidder_version'),
-              ('uq_executors_lot')
+              ('uq_executors_lot'),
+              ('ck_tenders_completed_state')
       ) AS required(constraint_name)
       LEFT JOIN pg_constraint actual
         ON actual.conname = required.constraint_name
@@ -98,7 +101,9 @@ BEGIN
               ('idx_tenders_customer_company'),
               ('idx_tenders_status_submission_deadline'),
               ('idx_bids_lot_status_bidder'),
+              ('idx_bids_admitted_lot_bidder'),
               ('idx_bids_bidder_company'),
+              ('idx_executors_company'),
               ('idx_executors_active_awarded_at_company')
       ) AS required(index_name)
       LEFT JOIN pg_indexes actual
@@ -108,6 +113,92 @@ BEGIN
 
     IF missing_indexes IS NOT NULL THEN
         RAISE EXCEPTION 'Missing workload indexes: %', array_to_string(missing_indexes, ', ');
+    END IF;
+
+    WITH required_foreign_keys AS (
+        SELECT *
+          FROM (
+              VALUES
+                  ('fk_tenders_customer', 'tenders', 'customer_company_id', 'companies', 'id'),
+                  ('fk_lots_tender', 'lots', 'tender_id', 'tenders', 'id'),
+                  ('fk_bids_lot', 'bids', 'lot_id', 'lots', 'id'),
+                  ('fk_bids_bidder_company', 'bids', 'bidder_company_id', 'companies', 'id'),
+                  ('fk_executors_lot', 'executors', 'lot_id', 'lots', 'id'),
+                  ('fk_executors_company', 'executors', 'company_id', 'companies', 'id')
+          ) AS expected(
+              constraint_name,
+              source_table,
+              source_column,
+              target_table,
+              target_column
+          )
+    ),
+    actual_foreign_keys AS (
+        SELECT
+            constraint_info.conname AS constraint_name,
+            source_table.relname AS source_table,
+            source_column.attname AS source_column,
+            target_table.relname AS target_table,
+            target_column.attname AS target_column,
+            constraint_info.confupdtype,
+            constraint_info.confdeltype
+        FROM pg_constraint constraint_info
+        JOIN pg_class source_table
+          ON source_table.oid = constraint_info.conrelid
+        JOIN pg_namespace source_schema
+          ON source_schema.oid = source_table.relnamespace
+        JOIN pg_attribute source_column
+          ON source_column.attrelid = source_table.oid
+         AND source_column.attnum = constraint_info.conkey[1]
+        JOIN pg_class target_table
+          ON target_table.oid = constraint_info.confrelid
+        JOIN pg_attribute target_column
+          ON target_column.attrelid = target_table.oid
+         AND target_column.attnum = constraint_info.confkey[1]
+        WHERE source_schema.nspname = 'tender_platform'
+          AND constraint_info.contype = 'f'
+    )
+    SELECT array_agg(expected.constraint_name ORDER BY expected.constraint_name)
+      INTO invalid_foreign_keys
+      FROM required_foreign_keys expected
+      LEFT JOIN actual_foreign_keys actual
+        ON actual.constraint_name = expected.constraint_name
+       AND actual.source_table = expected.source_table
+       AND actual.source_column = expected.source_column
+       AND actual.target_table = expected.target_table
+       AND actual.target_column = expected.target_column
+       AND actual.confupdtype = 'r'
+       AND actual.confdeltype = 'r'
+     WHERE actual.constraint_name IS NULL;
+
+    IF invalid_foreign_keys IS NOT NULL THEN
+        RAISE EXCEPTION
+            'Missing or incorrectly defined foreign keys: %',
+            array_to_string(invalid_foreign_keys, ', ');
+    END IF;
+
+    SELECT array_agg(constraint_info.conname ORDER BY constraint_info.conname)
+      INTO unindexed_foreign_keys
+      FROM pg_constraint constraint_info
+      JOIN pg_class table_info
+        ON table_info.oid = constraint_info.conrelid
+      JOIN pg_namespace schema_info
+        ON schema_info.oid = table_info.relnamespace
+     WHERE schema_info.nspname = 'tender_platform'
+       AND constraint_info.contype = 'f'
+       AND NOT EXISTS (
+           SELECT 1
+             FROM pg_index index_info
+            WHERE index_info.indrelid = constraint_info.conrelid
+              AND index_info.indisvalid
+              AND index_info.indisready
+              AND index_info.indkey[0] = constraint_info.conkey[1]
+       );
+
+    IF unindexed_foreign_keys IS NOT NULL THEN
+        RAISE EXCEPTION
+            'Foreign keys without a left-prefix index: %',
+            array_to_string(unindexed_foreign_keys, ', ');
     END IF;
 
     IF NOT EXISTS (

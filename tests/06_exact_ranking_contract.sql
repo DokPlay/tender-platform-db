@@ -1,0 +1,135 @@
+\set ON_ERROR_STOP on
+
+BEGIN;
+SET LOCAL search_path TO tender_platform, public;
+
+WITH report_bounds AS (
+    SELECT (
+        date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Moscow')
+        - INTERVAL '1 month'
+    ) AT TIME ZONE 'Europe/Moscow' AS period_start
+)
+INSERT INTO tenders (
+    id,
+    source_system,
+    external_id,
+    procurement_number,
+    title,
+    customer_company_id,
+    status,
+    published_at,
+    submission_deadline_at,
+    completed_at
+)
+OVERRIDING SYSTEM VALUE
+SELECT
+    2101,
+    'analytics-test',
+    'exact-ranking-lower',
+    'ANALYTICS-EXACT-LOWER',
+    'Экономия 10,003 процента',
+    1,
+    'completed',
+    bounds.period_start - INTERVAL '10 days',
+    bounds.period_start - INTERVAL '1 day',
+    bounds.period_start + INTERVAL '2 days'
+FROM report_bounds bounds
+UNION ALL
+SELECT
+    2102,
+    'analytics-test',
+    'exact-ranking-higher',
+    'ANALYTICS-EXACT-HIGHER',
+    'Экономия 10,004 процента',
+    2,
+    'completed',
+    bounds.period_start - INTERVAL '10 days',
+    bounds.period_start - INTERVAL '1 day',
+    bounds.period_start + INTERVAL '2 days'
+FROM report_bounds bounds;
+
+INSERT INTO lots (
+    id,
+    tender_id,
+    lot_number,
+    title,
+    initial_price,
+    currency_code,
+    status
+)
+OVERRIDING SYSTEM VALUE
+VALUES
+    (2101, 2101, 1, 'Экономия 10,003 процента', 10000.00, 'JPY', 'completed'),
+    (2102, 2102, 1, 'Экономия 10,004 процента', 10000.00, 'JPY', 'completed');
+
+WITH report_bounds AS (
+    SELECT (
+        date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Moscow')
+        - INTERVAL '1 month'
+    ) AT TIME ZONE 'Europe/Moscow' AS period_start
+)
+INSERT INTO executors (
+    id,
+    lot_id,
+    company_id,
+    awarded_amount,
+    awarded_at,
+    status
+)
+OVERRIDING SYSTEM VALUE
+SELECT
+    2101,
+    2101,
+    3,
+    8999.70,
+    bounds.period_start + INTERVAL '2 days',
+    'completed'
+FROM report_bounds bounds
+UNION ALL
+SELECT
+    2102,
+    2102,
+    3,
+    8999.60,
+    bounds.period_start + INTERVAL '2 days',
+    'completed'
+FROM report_bounds bounds;
+
+DO $test$
+DECLARE
+    lower_rank bigint;
+    higher_rank bigint;
+    lower_displayed_percent numeric;
+    higher_displayed_percent numeric;
+BEGIN
+    SELECT customer_rank, savings_percent
+      INTO lower_rank, lower_displayed_percent
+      FROM v_customer_efficiency_last_six_months
+     WHERE customer_company_id = 1
+       AND currency_code = 'JPY';
+
+    SELECT customer_rank, savings_percent
+      INTO higher_rank, higher_displayed_percent
+      FROM v_customer_efficiency_last_six_months
+     WHERE customer_company_id = 2
+       AND currency_code = 'JPY';
+
+    IF higher_rank <> 1 OR lower_rank <> 2 THEN
+        RAISE EXCEPTION
+            'Expected exact 10.004%% to rank above 10.003%%, found ranks % and %',
+            higher_rank,
+            lower_rank;
+    END IF;
+
+    IF lower_displayed_percent <> 10.00 OR higher_displayed_percent <> 10.00 THEN
+        RAISE EXCEPTION
+            'Expected both displayed percentages to remain rounded to 10.00, found % and %',
+            lower_displayed_percent,
+            higher_displayed_percent;
+    END IF;
+END
+$test$;
+
+ROLLBACK;
+
+SELECT 'exact_ranking_contract_passed' AS result;

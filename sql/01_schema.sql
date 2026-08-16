@@ -67,7 +67,15 @@ CREATE TABLE tenders (
     CONSTRAINT ck_tenders_submission_window
         CHECK (submission_deadline_at >= published_at),
     CONSTRAINT ck_tenders_completion_time
-        CHECK (completed_at IS NULL OR completed_at >= published_at)
+        CHECK (completed_at IS NULL OR completed_at >= published_at),
+    CONSTRAINT ck_tenders_completed_state
+        CHECK (
+            status <> 'completed'
+            OR (
+                completed_at IS NOT NULL
+                AND completed_at >= submission_deadline_at
+            )
+        )
 );
 
 COMMENT ON TABLE tenders IS
@@ -184,6 +192,10 @@ CREATE INDEX idx_tenders_status_submission_deadline
 
 CREATE INDEX idx_bids_lot_status_bidder
     ON bids (lot_id, status, bidder_company_id);
+
+CREATE INDEX idx_bids_admitted_lot_bidder
+    ON bids (lot_id, bidder_company_id)
+    WHERE status = 'admitted';
 
 CREATE INDEX idx_bids_bidder_company
     ON bids (bidder_company_id, submitted_at DESC);

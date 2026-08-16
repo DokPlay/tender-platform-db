@@ -153,6 +153,62 @@ BEGIN
         )
         VALUES (
             'test',
+            'completed-without-completed-at',
+            'INVALID-COMPLETED-MISSING',
+            'Завершённый тендер без даты завершения',
+            9001,
+            'completed',
+            timestamptz '2026-02-01 09:00:00+03',
+            timestamptz '2026-02-05 18:00:00+03'
+        );
+        RAISE EXCEPTION
+            'ck_tenders_completed_state did not require completed_at for a completed tender';
+    EXCEPTION
+        WHEN check_violation THEN NULL;
+    END;
+
+    BEGIN
+        INSERT INTO tenders (
+            source_system,
+            external_id,
+            procurement_number,
+            title,
+            customer_company_id,
+            status,
+            published_at,
+            submission_deadline_at,
+            completed_at
+        )
+        VALUES (
+            'test',
+            'completed-before-deadline',
+            'INVALID-COMPLETED-EARLY',
+            'Завершённый тендер раньше срока подачи заявок',
+            9001,
+            'completed',
+            timestamptz '2026-02-01 09:00:00+03',
+            timestamptz '2026-02-05 18:00:00+03',
+            timestamptz '2026-02-03 12:00:00+03'
+        );
+        RAISE EXCEPTION
+            'ck_tenders_completed_state allowed completion before the submission deadline';
+    EXCEPTION
+        WHEN check_violation THEN NULL;
+    END;
+
+    BEGIN
+        INSERT INTO tenders (
+            source_system,
+            external_id,
+            procurement_number,
+            title,
+            customer_company_id,
+            status,
+            published_at,
+            submission_deadline_at
+        )
+        VALUES (
+            'test',
             'invalid-dates',
             'INVALID-DATES',
             'Недопустимые даты',
